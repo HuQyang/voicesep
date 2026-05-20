@@ -44,8 +44,8 @@ import torch
 from funasr import AutoModel
 
 # 复用 main_pipeline.py 里所有非 ASR 的工具
-import main_pipeline2   # 用于按需访问 _asr / asr_wav (Paraformer)
-from main_pipeline2 import (
+import main_pipeline   # 用于按需访问 _asr / asr_wav (Paraformer)
+from main_pipeline import (
     SR,
     _free_gpu, _release_model,
     run_vad, _clean_text,
@@ -61,7 +61,7 @@ from main_bss import run_denoise, run_bss, check_bss_output
 from main_diarization import merge_segments, chunk_long_segments
 from speaker_db import extract_embedding_from_wave, SpeakerDB
 from scd import split_segments_by_scd
-from main_pipeline2 import _dump_debug, merge_consecutive_same_spk as _merge_consecutive_same_spk_v2
+from main_pipeline import _dump_debug, merge_consecutive_same_spk as _merge_consecutive_same_spk_v2
 
 
 # ─────────── FireRedASR 后端 ───────────
@@ -735,7 +735,7 @@ def main():
             sentences.sort(key=lambda r: (r["start"], r.get("speaker") if r.get("speaker") is not None else -1))
             _release_model(sys.modules[__name__], "_firered")
             # 释放 Paraformer (如果加载过)
-            _release_model(main_pipeline2, "_asr")
+            _release_model(main_pipeline, "_asr")
             _free_gpu("after overlap asr")
 
         # 真名映射

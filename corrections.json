@@ -24,11 +24,17 @@
 
     { "wrong": "电商公司", "right": "电商公司"},
 
-    { "wrong": "我书记姐", "right": "俊杰"},
-    { "wrong": "我书记结", "right": "俊杰"},
+    { "wrong": "我书记姐", "right": "俊姐"},
+    { "wrong": "我书记结", "right": "俊姐"},
     {"wrong": "学医纠正", "right": "数据校正"},
     {"wrong": "录制肉", "right": "录像"},
     {"wrong": "测量报告", "right": "车辆报告"},
+    {"wrong": "器材", "right": "计材"},
+    {"wrong": "猪肉设置", "right": "数据设置"},
+    {"wrong": "报油单", "right": "报修单"},
+    {"wrong": "报销单识别小程序", "right": "报修单识别小程序"},
+    {"wrong": "公交局", "right": "公交云"},
+    {"wrong": "器材", "right": "计材"},
     {"wrong": "器材", "right": "计材"}
   ],
 
