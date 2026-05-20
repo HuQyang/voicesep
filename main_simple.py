@@ -33,6 +33,7 @@ from main_firered import (
     apply_punc,
     merge_segments_for_asr,
     has_hallucination,
+    has_anomaly,
 )
 # 复用 main_pipeline 的 VAD/ITN/纠错/工具
 from main_pipeline import (
@@ -184,7 +185,7 @@ def main():
         if args.anti_hallu:
             n_retry = 0
             for i, ((bs, be, _), text) in enumerate(zip(block_records, texts)):
-                hit = has_hallucination(text)
+                hit = has_anomaly(text)
                 if not hit:
                     continue
                 seg = wav[int(bs/1000*SR):int(be/1000*SR)]
@@ -194,7 +195,7 @@ def main():
                 except Exception as e:
                     print(f"  [anti-hallu-fail] {bs/1000:.1f}-{be/1000:.1f}s: {e}")
                     para_text = ""
-                if para_text and not has_hallucination(para_text):
+                if para_text and not has_anomaly(para_text):
                     print(f"  [ANTI-HALLU] {bs/1000:7.2f}-{be/1000:7.2f}s '{hit}' → Paraformer 重转")
                     texts[i] = para_text
                     n_retry += 1

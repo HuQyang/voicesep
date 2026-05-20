@@ -182,6 +182,37 @@ def has_hallucination(text: str, extra: set = None) -> str:
     return ""
 
 
+def has_repetition(text: str,
+                   min_pattern_len: int = 3,
+                   max_pattern_len: int = 10,
+                   min_repeats: int = 4) -> str:
+    """
+    检测短串机械重复 (FireRedASR-AED 在弱信号长段的典型幻觉模式).
+    例: "这个里面这个里面...这个里面" × 21 次.
+
+    规则:
+      - pattern 长度 [3, 10] 字 (太短易误伤口语强调, 太长不像幻觉)
+      - 连续出现 >= 4 次才报警
+      - 单字符 pattern (如 "对对对") 不算 (正常口语)
+
+    返回: 命中描述字符串, 未命中空串.
+    """
+    for n in range(min_pattern_len, max_pattern_len + 1):
+        for m in re.finditer(rf"(.{{{n}}})\1{{{min_repeats - 1},}}", text):
+            pattern = m.group(1)
+            # 单字符重复 (如 "对对对", "提提提") 是正常口语
+            if len(set(pattern)) < 2:
+                continue
+            n_reps = len(m.group(0)) // n
+            return f"重复 {pattern!r} × {n_reps}"
+    return ""
+
+
+def has_anomaly(text: str, extra_blacklist: set = None) -> str:
+    """统一异常检测: 黑词幻觉 OR 短串重复幻觉, 任一命中即返回触发描述."""
+    return has_hallucination(text, extra_blacklist) or has_repetition(text)
+
+
 # ─────────── ASR 输入合并 + 文本时间戳切回 ───────────
 def merge_segments_for_asr(segments, target_dur_s: float = 25.0, max_dur_s: float = 30.0):
     """
@@ -613,7 +644,7 @@ def main():
         if args.anti_hallu:
             n_retry = 0
             for i, ((bs, be, _subs, _), text) in enumerate(zip(block_records, texts)):
-                hit = has_hallucination(text)
+                hit = has_anomaly(text)
                 if not hit:
                     continue
                 seg = wav[int(bs/1000*SR):int(be/1000*SR)]
@@ -623,7 +654,7 @@ def main():
                 except Exception as e:
                     print(f"  [anti-hallu-fail] {bs/1000:.1f}-{be/1000:.1f}s: {e}")
                     para_text = ""
-                if para_text and not has_hallucination(para_text):
+                if para_text and not has_anomaly(para_text):
                     print(f"  [ANTI-HALLU] {bs/1000:7.2f}-{be/1000:7.2f}s '{hit}' → Paraformer 重转")
                     texts[i] = para_text
                     n_retry += 1
