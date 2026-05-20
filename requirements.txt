@@ -1,0 +1,10 @@
+funasr
+modelscope
+torch
+torchaudio
+librosa
+soundfile
+pypdf
+jiwer
+openai
+scikit-learn

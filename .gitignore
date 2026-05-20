@@ -1,0 +1,96 @@
+# ─────────── 音频/数据 (太大, 不要传 GitHub) ───────────
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+*.aac
+*.wma
+
+# 整个数据目录
+data/
+meetting_data/
+meetting_data.zip
+test_audio.wav
+
+# BSS / 中间产物
+bss_out/
+
+# 声纹库 (含个人声纹, 敏感; 各机器单独维护)
+speakers/
+*.npz
+
+# ─────────── 结果输出 ───────────
+result/
+result.zip
+*.sv.txt
+*.sv.json
+*.A.txt
+*.A.json
+*.B.txt
+*.B.json
+*.C.txt
+*.C.json
+*.pp.txt
+*.pp.json
+debug_*/
+*_funasr.txt
+*_fire2.txt
+*_simple.txt
+*_firered.txt
+*_dolphin.txt
+
+# ─────────── 模型权重 (动辄几个 GB, GitHub 100MB 限制) ───────────
+pretrained/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+
+# 第三方源码仓库 (装在项目目录里的, 不该跟着主项目走)
+Dolphin/
+FireRedASR/
+
+# ─────────── Python ───────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+.env
+
+# ─────────── IDE / OS ───────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─────────── 临时文件 ───────────
+*.log
+*.tmp
+*.bak
+*~
+
+# ─────────── 私有文档 (这些是项目附件, 你可能不想公开) ───────────
+*.pages
+*.numbers
+*.xlsx
+*.docx
+*.pdf
+项目需求.txt
+
+# 但保留示例配置
+!corrections.json
+!requirements.txt
