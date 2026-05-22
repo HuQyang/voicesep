@@ -312,22 +312,22 @@ def main():
     )
     # file_nm = "04.21公交数据要素比赛决赛培训"
     file_nm = "钱部长数据融合沟通"
-    ap.add_argument("--input",default=f"result/{file_nm}_firered.json", 
+    ap.add_argument("--input",default=f"result/{file_nm}_para.json", 
                     help="ASR 输出: .json (simple/firered) 或 .txt")
-    ap.add_argument("--output", default=f"result/{file_nm}_simple_medium_32.txt", help="清洁后的 .txt")
-    ap.add_argument("--output-json", default=f"result/{file_nm}_simple_medium_32.json",
+    ap.add_argument("--output", default=f"result/{file_nm}_para_light.txt", help="清洁后的 .txt")
+    ap.add_argument("--output-json", default=f"result/{file_nm}_para_light.json",
                     help="可选: 同时输出结构化 JSON (含章节)")
     ap.add_argument("--chapters", action="store_true",
                     help="同时生成章节速览 (会多调一次 LLM)")
     ap.add_argument("--api-key", default="ollama", help="覆盖 LLM_API_KEY")
     ap.add_argument("--base-url", default="http://localhost:11434/v1", help="覆盖 LLM_BASE_URL")
-    ap.add_argument("--model", default="qwen2.5:32b", help="覆盖 LLM_MODEL")
+    ap.add_argument("--model", default="qwen2.5:14b", help="覆盖 LLM_MODEL")
     ap.add_argument("--batch-chars", type=int, default=2500,
                     help="一批送多少字 (越大越快, 但可能超 context)")
     ap.add_argument("--no-correct", action="store_true",
                     help="跳过纠错, 只生成章节 (要求同时给 --chapters)")
     ap.add_argument("--polish-level", choices=["light", "medium", "heavy"],
-                    default="medium",
+                    default="light",
                     help="清洁强度: light=保留口语风格 / medium=平衡(默认) / heavy=面向阅读, 接近书面")
     args = ap.parse_args()
 

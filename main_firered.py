@@ -416,9 +416,9 @@ def main():
                     help="diar 模式: segment=段内投票(传统稳); chunk=每个 chunk 投票(能 catch 快速轮替)")
     ap.add_argument("--diar-smooth", action=argparse.BooleanOptionalAction, default=True,
                     help="chunk 模式时是否平滑孤立点 (X Y X → X X X)")
-    ap.add_argument("--min-dbfs", type=float, default=-60.0)
+    ap.add_argument("--min-dbfs", type=float, default=-65.0)
     ap.add_argument("--merge-gap", type=int, default=300)
-    ap.add_argument("--min-dur", type=int, default=800)
+    ap.add_argument("--min-dur", type=int, default=400)
     ap.add_argument("--chunk-max", type=int, default=2000)
     ap.add_argument("--chunk-hop", type=int, default=1000)
     ap.add_argument("--output", default=f"result/{file_nm}_firered.json")
@@ -434,7 +434,7 @@ def main():
     ap.add_argument("--post-merge-max-chars", type=int, default=1500,
                     help="后合并硬上限: 合并后段最大字符数, 默认 1500")
     # SCD (Speaker Change Detection)
-    ap.add_argument("--scd", default=True, action="store_true",
+    ap.add_argument("--scd", default=False, action="store_true",
                     help="VAD 后追加 SCD: 滑窗 cam++ 距离检测说话人切换点")
     ap.add_argument("--scd-min-seg-s", type=float, default=5.0)
     ap.add_argument("--scd-window-s", type=float, default=0.75)
@@ -446,7 +446,7 @@ def main():
                          "远场/多男声场景必开.")
     ap.add_argument("--embedder-model", default="iic/speech_eres2net_large_200k_sv_zh-cn_16k-common",
                     help="声纹模型 (覆盖默认 ERes2NetV2). 推荐: "
-                         "iic/speech_eres2net_sv_zh-cn_3dspeaker_16k (远场强); "
+                         "iic/speech_eres2net_base_200k_sv_zh-cn_16k-common (200k 训练, 192-d); "
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")
     ap.add_argument("--debug-dir", default=None,
                     help="若指定, 每个阶段 dump JSON 到此目录")

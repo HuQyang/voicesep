@@ -218,33 +218,108 @@ def get_wetext_itn():
     return _wetext_itn if _wetext_itn is not False else None
 
 
+# 模糊量词前缀: 出现在数词前表"大约/一些", 此时数词不该转阿拉伯数字
+# 例: "几十万人" 不能变 "几100000人"; "上百" 不能变 "上100"; "好几千" 不能变 "好几1000"
+_APPROX_PREFIX_2 = ("好几",)     # 2 字前缀
+_APPROX_PREFIX_1 = ("几", "数", "上")   # 1 字前缀
+
+
+def _has_approx_prefix(text: str, pos: int) -> bool:
+    """检查 text[pos] 这个位置前面是否是模糊量词修饰"""
+    if pos >= 2 and text[pos - 2:pos] in _APPROX_PREFIX_2:
+        return True
+    if pos >= 1 and text[pos - 1] in _APPROX_PREFIX_1:
+        return True
+    return False
+
+
 def quick_itn(text: str) -> str:
     """
     简单 ITN:
       1) 正式数词 ("四十三"→"43", "一百五十"→"150", "三千八百七十六"→"3876")
       2) 逐位读数 ("三八七三"→"3873", "幺二零三九"→"12039")
 
+    跳过转换的情况:
+      - 前面是模糊量词 ("几十万"→保持, "上百"→保持, "好几千"→保持)
+
     顺序很重要: 先正式数词, 再逐位 (否则"四十三"的"四"会被逐位规则吃掉).
     """
     # 1) 正式数词
     def repl_formal(m):
+        if _has_approx_prefix(m.string, m.start()):
+            return m.group()   # 跳过 (几十万 / 上百 等)
         n = _parse_formal_cn_num(m.group())
         return str(n) if n is not None else m.group()
     text = _FORMAL_NUM.sub(repl_formal, text)
 
     # 2) 剩余的连续中文数字 (逐位读数)
     def repl_run(m):
+        if _has_approx_prefix(m.string, m.start()):
+            return m.group()
         return "".join(_DIGIT_MAP.get(c, c) for c in m.group())
     text = _DIGIT_RUN.sub(repl_run, text)
     return text
 
 
+def smart_large_number_format(text: str) -> str:
+    """
+    可读性优化: 把"裸"的大整数转回"X万 / X亿"形式.
+    示例:
+      5010000人  →  501万人
+      1200000元  →  120万元
+      230000000  →  2.3亿
+      12345        →  1.2万
+      1234       →  保持不变 (小于 1 万)
+
+    注意:
+      - 跳过紧贴前/后字母数字的 (避免破坏 ID/电话/错误码)
+      - 跳过紧贴 "年/号/期/章/节/楼/层/室" 等单位 (这些数字保留原样)
+      - 保留前缀 "几/数/上/好几" 的模糊量词
+    """
+    # 后面紧贴的"应保留为纯阿拉伯数字"的单位
+    KEEP_DIGIT_UNITS = "年号期章节楼层室届任季度版页页码秒分时第"
+
+    def repl(m):
+        s = m.group()
+        n = int(s)
+
+        # 边界检查: 前后是字母/数字/小数点 → 跳过 (像 ID/电话号)
+        start, end = m.start(), m.end()
+        full = m.string
+        if start > 0 and (full[start - 1].isalnum() or full[start - 1] == "."):
+            return s
+        if end < len(full) and (full[end].isalnum() or full[end] == "."):
+            return s
+        # 后面紧贴特定单位 → 保留数字原样 (1986年, 第3章)
+        if end < len(full) and full[end] in KEEP_DIGIT_UNITS:
+            return s
+        # 前面是模糊量词 → 跳过 (理论上前面 quick_itn 已处理, 这里再保险)
+        if start > 0 and full[start - 1] in "几数上多":
+            return s
+        if start > 1 and full[start - 2:start] == "好几":
+            return s
+
+        if n < 10000:
+            return s
+        if n >= 100000000:
+            yi = n / 100000000
+            return f"{int(yi)}亿" if yi == int(yi) else f"{yi:.1f}亿"
+        # 1 万 ~ 1 亿 之间
+        wan = n / 10000
+        return f"{int(wan)}万" if wan == int(wan) else f"{wan:.1f}万"
+
+    return re.sub(r"\d{5,}", repl, text)
+
+
 def apply_itn(text: str, use_wetext: bool = True) -> str:
     """
-    ITN 链式两道:
+    ITN 链式:
       1) WeTextProcessing FST: 精准转规范数词 (一百五十→150, 三千八百七十六→3876)
-         不抛异常但部分场景会"原样返回", 所以需要第二道
+         不抛异常但部分场景会"原样返回"
       2) quick_itn 正则: 扫剩下的中文数字 (尤其逐位读数 三八七三→3873)
+         + 跳过模糊量词修饰 (几十万 / 上百 保留中文)
+      3) smart_large_number_format: 把"裸"大整数转回"X万 / X亿"提升可读性
+         (5010000 → 501万, 1234567 → 123.5万)
     """
     if use_wetext:
         n = get_wetext_itn()
@@ -253,7 +328,9 @@ def apply_itn(text: str, use_wetext: bool = True) -> str:
                 text = n.normalize(text)
             except Exception:
                 pass
-    return quick_itn(text)
+    text = quick_itn(text)
+    text = smart_large_number_format(text)
+    return text
 
 
 def asr_wav(wav: np.ndarray, sr: int = SR, hotword: str = "") -> str:
@@ -676,7 +753,7 @@ def main():
                     help="SCD 切出来的子段最短时长(s), 防过度切碎")
     ap.add_argument("--embedder-model", default=None,
                     help="声纹模型 (覆盖默认 ERes2NetV2). 推荐: "
-                         "iic/speech_eres2net_sv_zh-cn_3dspeaker_16k (远场强); "
+                         "iic/speech_eres2net_base_200k_sv_zh-cn_16k-common (200k 训练, 192-d); "
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")
     ap.add_argument("--whiten", action="store_true",
                     help="聚类前对所有 embedding 减全局均值. 远场/同房间多人录音, "

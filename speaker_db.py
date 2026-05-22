@@ -24,10 +24,11 @@ _embedder = None
 
 
 # 默认 ERes2NetV2 (192-d, 通用中文). 可用 set_embedder_model() 或环境变量
-# SPEAKER_EMB_MODEL 覆盖. 推荐备选:
-#   iic/speech_eres2net_sv_zh-cn_3dspeaker_16k       (3D-Speaker 训练, 远场强, 192-d)
-#   iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (大模型, 512-d, 最强)
-#   iic/speech_campplus_sv_zh-cn_16k-common          (cam++, 192-d, 经典基线)
+# SPEAKER_EMB_MODEL 覆盖. 推荐备选 (已验证存在):
+#   iic/speech_eres2net_base_200k_sv_zh-cn_16k-common  (ERes2Net 200k 小时训练, 192-d)
+#   iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (ERes2Net-large, 512-d, 最强)
+#   iic/speech_eres2netv2_sv_zh-cn_16k-common          (ERes2NetV2, 192-d, 默认)
+#   iic/speech_campplus_sv_zh-cn_16k-common            (cam++, 192-d, 经典基线)
 _EMBEDDER_MODEL = os.environ.get(
     "SPEAKER_EMB_MODEL",
     "iic/speech_eres2netv2_sv_zh-cn_16k-common",
