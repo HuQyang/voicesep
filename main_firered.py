@@ -398,7 +398,7 @@ def main():
                     help="FireRedASR 输出命中黑词 (宝宝/睡觉/王者荣耀...) → 用 Paraformer 重转该段")
     # 复用 main_pipeline 的参数
     ap.add_argument("--num-spk", type=int, default=3)
-    ap.add_argument("--threshold", type=float, default=0.7)
+    ap.add_argument("--threshold", type=float, default=0.6)
     ap.add_argument("--enroll-db", default="speaker/db.npz")
     ap.add_argument("--match-threshold", type=float, default=0.55)
     ap.add_argument("--itn", action=argparse.BooleanOptionalAction, default=True)
