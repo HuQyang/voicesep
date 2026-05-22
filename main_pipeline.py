@@ -115,19 +115,34 @@ def run_vad(wav_path: str, engine: str = "fsmn",
                         max_end_silence_ms=fsmn_end_sil_ms)
 
 
+# def get_asr():
+#     """整段 ASR: Paraformer-large + 内置 VAD + CT-Punc + 时间戳"""
+#     global _asr
+#     if _asr is None:
+#         print("[asr] 加载 Paraformer + FSMN-VAD + CT-Punc...")
+#         _asr = AutoModel(
+#             model="paraformer-zh",
+#             vad_model="fsmn-vad",
+#             punc_model="ct-punc",
+#             disable_update=True,
+#         )
+#     return _asr
+
 def get_asr():
-    """整段 ASR: Paraformer-large + 内置 VAD + CT-Punc + 时间戳"""
+    """
+    换回 Paraformer-zh，但【绝对不要】加 vad_model 参数！
+    纯中文底座，配合 CT-Punc，对 BSS 分离后的电音伪影抵抗力极强，绝不输出外语。
+    """
     global _asr
     if _asr is None:
-        print("[asr] 加载 Paraformer + FSMN-VAD + CT-Punc...")
+        print("[asr] 加载 Paraformer-zh (纯中文稳定底座)...")
         _asr = AutoModel(
-            model="paraformer-zh",
-            vad_model="fsmn-vad",
-            punc_model="ct-punc",
+            model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            punc_model="ct-punc",       # 加上标点模型
             disable_update=True,
+            # 注意：千万不要写 vad_model="fsmn-vad"
         )
     return _asr
-
 
 _CJK_RE = re.compile(r"[一-鿿]")
 _SPACE_BETWEEN_CJK = re.compile(r"(?<=[一-鿿])\s+(?=[一-鿿])")
@@ -781,8 +796,8 @@ def main():
                     help="长段滑窗最大长度(ms), 聚类粒度")
     ap.add_argument("--chunk-hop", type=int, default=1500,
                     help="长段滑窗 hop(ms)")
-    ap.add_argument("--output", default=f"result/{file_nm}_para.json", help="可选: 保存 .json")
-    ap.add_argument("--output-txt", default=f"result/{file_nm}_para.txt", help="可选: 保存可读 .txt (一行一条 turn)")
+    ap.add_argument("--output", default=f"result/{file_nm}_para2.json", help="可选: 保存 .json")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_para2.txt", help="可选: 保存可读 .txt (一行一条 turn)")
     ap.add_argument("--para-gap", type=int, default=800,
                     help="段落分割: 句子间隙(ms) > 此值时另起一段")
     ap.add_argument("--para-max-dur", type=int, default=60000,
