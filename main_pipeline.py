@@ -170,19 +170,28 @@ _FORMAL_NUM = re.compile(
 
 
 def _parse_formal_cn_num(s: str):
-    """解析'四十三'→43, '一百五十'→150, '三千八百七十六'→3876. 失败返 None."""
+    """解析'四十三'→43, '一百五十'→150, '三千八百七十六'→3876. 失败返 None.
+
+    重要修正:
+      - 孤立的 '万' / '亿' 不视为数字, 返回 None (避免 '一千多万' → '1000多10000')
+      - 孤立的 '十' / '百' / '千' 仍按经典语意处理 ('十块' → '10块')
+    """
     if not s:
         return None
     total = 0
-    section = 0   # 当前万段内的累积
+    section = 0     # 当前万段内的累积
     digit = 0
-    has_num = False
+    has_digit = False    # 是否见过真正的数字字符 (零~九/两/幺)
     for ch in s:
         if ch in _DIGIT_MAP:
             digit = int(_DIGIT_MAP[ch])
-            has_num = True
+            has_digit = True
         elif ch in _UNIT_VAL:
             unit = _UNIT_VAL[ch]
+            # 关键修正: 孤立的 万/亿 (前面没数字, section 也空) → 视为单位字
+            # 这样 "一千多万" 中的 "万" 不会被当成 10000
+            if unit >= 10_000 and not has_digit and section == 0:
+                return None
             if unit >= 10_000:
                 section = (section + (digit if digit > 0 else 1)) * unit
                 total += section
@@ -192,10 +201,10 @@ def _parse_formal_cn_num(s: str):
                     digit = 1
                 section += digit * unit
             digit = 0
-            has_num = True
         else:
             return None
-    return (total + section + digit) if has_num else None
+    # 必须有真正的数字字符才视为数字
+    return (total + section + digit) if has_digit else None
 
 _wetext_itn = None
 
@@ -326,6 +335,23 @@ def smart_large_number_format(text: str) -> str:
     return re.sub(r"\d{5,}", repl, text)
 
 
+_POST_ITN_UNIT_FIXES = [
+    # 兜底: 修复 "数字多10000" → "数字多万" (其他模块/旧数据残留)
+    (re.compile(r"(\d+(?:\.\d+)?)\s*多\s*10000(?!\d)"), r"\1多万"),
+    (re.compile(r"(\d+(?:\.\d+)?)\s*多\s*100000000(?!\d)"), r"\1多亿"),
+    # "数字10000" 中间无修饰 (兜底, 但 smart_large_number_format 应该已经处理掉)
+    (re.compile(r"(?<![\d.])10000(?![\d.])"), r"万"),
+    (re.compile(r"(?<![\d.])100000000(?![\d.])"), r"亿"),
+]
+
+
+def _post_fix_itn_units(text: str) -> str:
+    """ITN 后兜底: 修 '数字多10000' / 孤立 10000 这类粘连错误"""
+    for pat, repl in _POST_ITN_UNIT_FIXES:
+        text = pat.sub(repl, text)
+    return text
+
+
 def apply_itn(text: str, use_wetext: bool = True) -> str:
     """
     ITN 链式:
@@ -335,6 +361,7 @@ def apply_itn(text: str, use_wetext: bool = True) -> str:
          + 跳过模糊量词修饰 (几十万 / 上百 保留中文)
       3) smart_large_number_format: 把"裸"大整数转回"X万 / X亿"提升可读性
          (5010000 → 501万, 1234567 → 123.5万)
+      4) _post_fix_itn_units: 兜底修复 "数字多10000" / 孤立 10000 等粘连错误
     """
     if use_wetext:
         n = get_wetext_itn()
@@ -345,6 +372,7 @@ def apply_itn(text: str, use_wetext: bool = True) -> str:
                 pass
     text = quick_itn(text)
     text = smart_large_number_format(text)
+    text = _post_fix_itn_units(text)
     return text
 
 
