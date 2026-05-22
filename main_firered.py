@@ -446,7 +446,7 @@ def main():
                          "远场/多男声场景必开.")
     ap.add_argument("--embedder-model", default="iic/speech_eres2net_large_200k_sv_zh-cn_16k-common",
                     help="声纹模型 (覆盖默认 ERes2NetV2). 推荐: "
-                         "iic/speech_eres2net_sv_zh-cn_3dspeaker_16k (远场强); "
+                         "iic/speech_eres2net_base_200k_sv_zh-cn_16k-common (200k 训练, 192-d); "
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")
     ap.add_argument("--debug-dir", default=None,
                     help="若指定, 每个阶段 dump JSON 到此目录")
