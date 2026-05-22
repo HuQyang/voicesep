@@ -636,9 +636,14 @@ def chunks_to_fine_turns(kept_chunks, labels, smooth: bool = True):
 # ─────────── 主流程 ───────────
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wav",default="data/车辆管理业务研讨.mp3", help="输入音频")
+    # file_nm = "2026-03-18 14_28 记录"
+    # file_nm = "车辆管理业务研讨"
+    file_nm = "04.21公交数据要素比赛决赛培训"
+    # file_nm = "2025-09-30 15_56 记录"
+    # file_nm = "钱部长数据融合沟通"
+    ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
     ap.add_argument("--num-spk", type=int, default=5, help="已知人数 (最稳)")
-    ap.add_argument("--threshold", type=float, default=0.8, help="AHC cosine 距离阈值")
+    ap.add_argument("--threshold", type=float, default=0.6, help="AHC cosine 距离阈值")
     ap.add_argument("--enroll-db", default=None, help="可选: 声纹库, 把 spk_X 替换成真名")
     ap.add_argument("--match-threshold", type=float, default=0.55)
     ap.add_argument("--hotword", default="", help="")
@@ -648,7 +653,7 @@ def main():
                     help="优先 WeTextProcessing (装了就用, 没装自动退回 quick_itn). --no-wetext-itn 强制 quick_itn")
     ap.add_argument("--denoise", action=argparse.BooleanOptionalAction, default=False,
                     help="是否走 FRCRN 降噪 (--denoise / --no-denoise)")
-    ap.add_argument("--vad", choices=["fsmn", "silero"], default="fsmn",
+    ap.add_argument("--vad", choices=["fsmn", "silero"], default="silero",
                     help="VAD 引擎: fsmn (中文会议默认) / silero (远场/低 SNR 更鲁棒)")
     ap.add_argument("--vad-fsmn-max-seg-ms", type=int, default=60000,
                     help="FSMN-VAD 单段上限(ms). 默认 60000 太宽容, 多人快速轮替会"
@@ -689,7 +694,7 @@ def main():
                     help="diar 模式: segment=段内投票(传统稳); chunk=每个 chunk 独立投票(能 catch 快速轮替)")
     ap.add_argument("--diar-smooth", action=argparse.BooleanOptionalAction, default=True,
                     help="chunk 模式时是否平滑孤立点 (X Y X → X X X)")
-    ap.add_argument("--min-dbfs", type=float, default=-50.0,
+    ap.add_argument("--min-dbfs", type=float, default=-45.0,
                     help="emb 提取前丢弃低能量 chunk (远场设更松, 比如 -55)")
     ap.add_argument("--merge-gap", type=int, default=300,
                     help="VAD 后相邻段间隙 < 此值(ms) 则合并 (调大 → 段更连续, 同人不易裂)")
@@ -699,8 +704,8 @@ def main():
                     help="长段滑窗最大长度(ms), 聚类粒度")
     ap.add_argument("--chunk-hop", type=int, default=1500,
                     help="长段滑窗 hop(ms)")
-    ap.add_argument("--output", default=None, help="可选: 保存 .json")
-    ap.add_argument("--output_dir", default="result", help="可选: 保存可读 .txt (一行一条 turn)")
+    ap.add_argument("--output", default=f"result/{file_nm}_para.json", help="可选: 保存 .json")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_para.txt", help="可选: 保存可读 .txt (一行一条 turn)")
     ap.add_argument("--para-gap", type=int, default=800,
                     help="段落分割: 句子间隙(ms) > 此值时另起一段")
     ap.add_argument("--para-max-dur", type=int, default=60000,
@@ -1088,10 +1093,11 @@ def main():
                 json.dump(results_json, f, ensure_ascii=False, indent=2)
             print(f"\n[saved json] {args.output}")
 
-        if args.output_dir:
-            os.makedirs(args.output_dir, exist_ok=True)
-            filename = os.path.splitext(os.path.basename(args.wav))[0]
-            txt_file = os.path.join(args.output_dir, f"{filename}_funasr.txt")
+        if args.output_txt:
+            # os.makedirs(args.output_dir, exist_ok=True)
+            # filename = os.path.splitext(os.path.basename(args.wav))[0]
+            # txt_file = os.path.join(args.output_dir, f"{filename}_fire3_denoise.txt")
+            txt_file = args.output_txt
             with open(txt_file, "w", encoding="utf-8") as f:
                 f.write(f"{os.path.basename(args.wav)}\n\n")
                 for p in paragraphs:

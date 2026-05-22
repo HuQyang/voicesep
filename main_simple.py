@@ -115,7 +115,7 @@ def main():
                     help="段落字数硬上限")
 
     # 输出
-    ap.add_argument("--output", default=None, help="JSON 路径")
+    ap.add_argument("--output", default=f'result/{file_nm}_simple.json', help="JSON 路径")
     ap.add_argument("--output-dir", default="result", help="TXT 输出目录")
     ap.add_argument("--output-txt", default=f"result/{file_nm}_simple.txt")
     args = ap.parse_args()

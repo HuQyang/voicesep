@@ -372,7 +372,11 @@ def _dump_segments_to_tmp(wav, segments, sr=SR, min_dur_s=0.3, max_dur_s=30.0):
 
 def main():
     ap = argparse.ArgumentParser()
-    file_nm = "车辆管理业务研讨"
+    # file_nm = "2026-03-18 14_28 记录"
+    # file_nm = "车辆管理业务研讨"
+    file_nm = "04.21公交数据要素比赛决赛培训"
+    # file_nm = "2025-09-30 15_56 记录"
+    # file_nm = "钱部长数据融合沟通"
     ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
     ap.add_argument("--model-dir", default="pretrained/FireRedASR-AED-L", help="FireRedASR 权重目录")
     ap.add_argument("--variant", choices=["aed", "llm"], default="aed")
@@ -380,7 +384,7 @@ def main():
                     help="一次喂 FireRedASR 的段数 (3090 24G 建议 1, 大于 1 容易 OOM)")
     ap.add_argument("--beam-size", type=int, default=3, help="解码 beam, 1=贪心更省显存")
     ap.add_argument("--firered-max-seg", type=float, default=30.0,
-                    help="ASR 输入 segment 长度上限(s), 超过强切. FireRedASR 训练 max=60s")
+                    help="ASR 输入 segme dnt 长度上限(s), 超过强切. FireRedASR 训练 max=60s")
     ap.add_argument("--asr-merge", action=argparse.BooleanOptionalAction, default=True,
                     help="合并相邻短 VAD 段到 ~target_s, 喂 FireRedASR 更长上下文, "
                          "ASR 后用 turns 时间戳切回多 speaker 子段. 默认开启.")
@@ -393,16 +397,16 @@ def main():
     ap.add_argument("--anti-hallu", action=argparse.BooleanOptionalAction, default=True,
                     help="FireRedASR 输出命中黑词 (宝宝/睡觉/王者荣耀...) → 用 Paraformer 重转该段")
     # 复用 main_pipeline 的参数
-    ap.add_argument("--num-spk", type=int, default=8)
+    ap.add_argument("--num-spk", type=int, default=3)
     ap.add_argument("--threshold", type=float, default=0.7)
     ap.add_argument("--enroll-db", default="speaker/db.npz")
     ap.add_argument("--match-threshold", type=float, default=0.55)
     ap.add_argument("--itn", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--wetext-itn", action=argparse.BooleanOptionalAction, default=True)
-    ap.add_argument("--denoise", action=argparse.BooleanOptionalAction, default=True)
-    ap.add_argument("--vad", choices=["fsmn", "silero"], default="fsmn")
+    ap.add_argument("--denoise", action=argparse.BooleanOptionalAction, default=False)
+    ap.add_argument("--vad", choices=["fsmn", "silero"], default="silero")
     ap.add_argument("--no-bss", action="store_true")
-    ap.add_argument("--bss-min-dur", type=float, default=1.0)
+    ap.add_argument("--bss-min-dur", type=float, default=2.0)
     ap.add_argument("--bss-max-dur", type=float, default=30.0)
     ap.add_argument("--bss-dump-dir", default=None,
                     help="BSS 检测到重叠时落盘 (原始混合 + 分离两路 wav), 展示用")
@@ -412,20 +416,20 @@ def main():
                     help="diar 模式: segment=段内投票(传统稳); chunk=每个 chunk 投票(能 catch 快速轮替)")
     ap.add_argument("--diar-smooth", action=argparse.BooleanOptionalAction, default=True,
                     help="chunk 模式时是否平滑孤立点 (X Y X → X X X)")
-    ap.add_argument("--min-dbfs", type=float, default=-45.0)
+    ap.add_argument("--min-dbfs", type=float, default=-60.0)
     ap.add_argument("--merge-gap", type=int, default=300)
     ap.add_argument("--min-dur", type=int, default=800)
     ap.add_argument("--chunk-max", type=int, default=2000)
     ap.add_argument("--chunk-hop", type=int, default=1000)
-    ap.add_argument("--output", default=None)
+    ap.add_argument("--output", default=f"result/{file_nm}_firered.json")
     ap.add_argument("--output-dir", default="result")
-    ap.add_argument("--output-txt", default=f"result/{file_nm}_fire3_denoise.txt")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_firered.txt")
     ap.add_argument("--para-gap", type=int, default=800)
     ap.add_argument("--para-max-dur", type=int, default=60000)
     ap.add_argument("--para-max-chars", type=int, default=600)
     ap.add_argument("--post-merge-gap", type=int, default=5000,
                     help="后合并: 同 spk + 都非 overlap, 间隔(ms)<=此值则合并")
-    ap.add_argument("--post-merge-max-dur", type=int, default=180000,
+    ap.add_argument("--post-merge-max-dur", type=int, default=120000,
                     help="后合并硬上限: 合并后段最大时长(ms), 默认 3 分钟")
     ap.add_argument("--post-merge-max-chars", type=int, default=1500,
                     help="后合并硬上限: 合并后段最大字符数, 默认 1500")
@@ -437,10 +441,10 @@ def main():
     ap.add_argument("--scd-hop-s", type=float, default=0.1)
     ap.add_argument("--scd-threshold", type=float, default=0.5)
     ap.add_argument("--scd-min-spk-dur-s", type=float, default=0.8)
-    ap.add_argument("--whiten", action="store_true",
+    ap.add_argument("--whiten", default=False, action="store_true",
                     help="聚类前对所有 embedding 减全局均值, 移除房间/通道共同分量. "
                          "远场/多男声场景必开.")
-    ap.add_argument("--embedder-model", default="iic/speech_eres2net_base_200k_sv_zh-cn_16k-common",
+    ap.add_argument("--embedder-model", default="iic/speech_eres2net_large_200k_sv_zh-cn_16k-common",
                     help="声纹模型 (覆盖默认 ERes2NetV2). 推荐: "
                          "iic/speech_eres2net_sv_zh-cn_3dspeaker_16k (远场强); "
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")

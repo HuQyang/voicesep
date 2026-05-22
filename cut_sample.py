@@ -194,7 +194,12 @@ def _print_suggestions(suggestions: dict, audio_path: str = ""):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wav", help="输入音频 (mp3/wav). --suggest-from 模式可省略")
+    # file_nm = "2026-03-18 14_28 记录"
+    # file_nm = "车辆管理业务研讨"
+    # file_nm = "04.21公交数据要素比赛决赛培训"
+    # file_nm = "2025-09-30 15_56 记录"
+    file_nm = "钱部长数据融合沟通"
+    ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频 (mp3/wav). --suggest-from 模式可省略")
 
     # 单段模式
     g = ap.add_mutually_exclusive_group()
@@ -211,7 +216,7 @@ def main():
     ap.add_argument("--out-dir", default="speakers/raw", help="批量模式的输出目录")
 
     # 自动建议模式 (从 ASR 输出挑候选)
-    ap.add_argument("--suggest-from", default=None,
+    ap.add_argument("--suggest-from", default=f"result/{file_nm}_firered.json",
                     help="从 ASR JSON 输出 (含 speaker/start/end/text) "
                          "自动挑选每人最适合做声纹注册的片段")
     ap.add_argument("--suggest-min-dur", type=float, default=5.0)

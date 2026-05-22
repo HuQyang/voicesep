@@ -215,7 +215,8 @@ def dolphin_transcribe_segments(wav: np.ndarray, segments, args) -> list:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wav", default="data/04.21公交数据要素比赛决赛培训.mp3", help="输入音频")
+    file_nm = "04.21公交数据要素比赛决赛培训"
+    ap.add_argument("--wav", default=f"data/{file_nm}.mp3", help="输入音频")
 
     # Dolphin 相关
     ap.add_argument("--model-name", default="small",
@@ -237,7 +238,7 @@ def main():
     ap.add_argument("--overlap-min-chars", type=int, default=3)
 
     # 与 main_pipeline 完全对齐的参数 (确保可对比)
-    ap.add_argument("--num-spk", type=int, default=None)
+    ap.add_argument("--num-spk", type=int, default=3)
     ap.add_argument("--threshold", type=float, default=0.7)
     ap.add_argument("--enroll-db", default=None)
     ap.add_argument("--match-threshold", type=float, default=0.55)
@@ -253,18 +254,19 @@ def main():
     ap.add_argument("--vad-show-n", type=int, default=20)
     ap.add_argument("--diar-mode", choices=["segment", "chunk"], default="segment")
     ap.add_argument("--diar-smooth", action=argparse.BooleanOptionalAction, default=True)
-    ap.add_argument("--min-dbfs", type=float, default=-50.0)
+    ap.add_argument("--min-dbfs", type=float, default=-55.0)
     ap.add_argument("--merge-gap", type=int, default=300)
     ap.add_argument("--min-dur", type=int, default=800)
     ap.add_argument("--chunk-max", type=int, default=3000)
     ap.add_argument("--chunk-hop", type=int, default=1500)
-    ap.add_argument("--output", default=None)
+    ap.add_argument("--output", default=f"result/{file_nm}_dolphin.json")
     ap.add_argument("--output-dir", default="result")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_dolphin.txt")
     ap.add_argument("--para-gap", type=int, default=800)
-    ap.add_argument("--para-max-dur", type=int, default=60_000)
+    ap.add_argument("--para-max-dur", type=int, default=60000)
     ap.add_argument("--para-max-chars", type=int, default=600)
     ap.add_argument("--post-merge-gap", type=int, default=5000)
-    ap.add_argument("--post-merge-max-dur", type=int, default=180_000,
+    ap.add_argument("--post-merge-max-dur", type=int, default=180000,
                     help="post-merge 硬上限: 合并后段最大时长(ms)")
     ap.add_argument("--post-merge-max-chars", type=int, default=1500,
                     help="post-merge 硬上限: 合并后段最大字符数")
