@@ -715,12 +715,12 @@ def main():
     ap = argparse.ArgumentParser()
     # file_nm = "2026-03-18 14_28 记录"
     # file_nm = "车辆管理业务研讨"
-    file_nm = "04.21公交数据要素比赛决赛培训"
+    # file_nm = "04.21公交数据要素比赛决赛培训"
     # file_nm = "2025-09-30 15_56 记录"
-    # file_nm = "钱部长数据融合沟通"
+    file_nm = "钱部长数据融合沟通"
     ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
     ap.add_argument("--num-spk", type=int, default=5, help="已知人数 (最稳)")
-    ap.add_argument("--threshold", type=float, default=0.6, help="AHC cosine 距离阈值")
+    ap.add_argument("--threshold", type=float, default=0.65, help="AHC cosine 距离阈值")
     ap.add_argument("--enroll-db", default=None, help="可选: 声纹库, 把 spk_X 替换成真名")
     ap.add_argument("--match-threshold", type=float, default=0.55)
     ap.add_argument("--hotword", default="", help="")
@@ -730,7 +730,7 @@ def main():
                     help="优先 WeTextProcessing (装了就用, 没装自动退回 quick_itn). --no-wetext-itn 强制 quick_itn")
     ap.add_argument("--denoise", action=argparse.BooleanOptionalAction, default=False,
                     help="是否走 FRCRN 降噪 (--denoise / --no-denoise)")
-    ap.add_argument("--vad", choices=["fsmn", "silero"], default="silero",
+    ap.add_argument("--vad", choices=["fsmn", "silero"], default="fsmn",
                     help="VAD 引擎: fsmn (中文会议默认) / silero (远场/低 SNR 更鲁棒)")
     ap.add_argument("--vad-fsmn-max-seg-ms", type=int, default=60000,
                     help="FSMN-VAD 单段上限(ms). 默认 60000 太宽容, 多人快速轮替会"
@@ -751,7 +751,7 @@ def main():
                     help="SCD 切点 cosine 距离阈值. 0.35 灵敏 / 0.5 默认 / 0.65 保守")
     ap.add_argument("--scd-min-spk-dur-s", type=float, default=0.8,
                     help="SCD 切出来的子段最短时长(s), 防过度切碎")
-    ap.add_argument("--embedder-model", default=None,
+    ap.add_argument("--embedder-model", default="iic/speech_eres2net_large_200k_sv_zh-cn_16k-common",
                     help="声纹模型 (覆盖默认 ERes2NetV2). 推荐: "
                          "iic/speech_eres2net_base_200k_sv_zh-cn_16k-common (200k 训练, 192-d); "
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")
@@ -795,7 +795,7 @@ def main():
                     help="后合并硬上限: 合并后段最大时长(ms), 默认 3 分钟")
     ap.add_argument("--post-merge-max-chars", type=int, default=1500,
                     help="后合并硬上限: 合并后段最大字符数, 默认 1500")
-    ap.add_argument("--debug-dir", default=None,
+    ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_para",
                     help="若指定, 每个阶段 dump 一份 JSON 到此目录 "
                          "(vad/turns/bss/asr/final), 用于演示和调参定位")
     args = ap.parse_args()

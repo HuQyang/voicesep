@@ -448,8 +448,11 @@ def main():
                     help="声纹模型 (覆盖默认 ERes2NetV2). 推荐: "
                          "iic/speech_eres2net_base_200k_sv_zh-cn_16k-common (200k 训练, 192-d); "
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")
-    ap.add_argument("--debug-dir", default=None,
+    ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_firered",
                     help="若指定, 每个阶段 dump JSON 到此目录")
+    ap.add_argument("--volume-boost", type=float, default=0.0,
+                    help="放大音量倍数。设为 0.0 时执行自动峰值标准化(自动拉到最大不爆音音量)。")
+    
     args = ap.parse_args()
 
     # 在任何 embedding 调用之前切换模型
@@ -462,6 +465,19 @@ def main():
     wav, _ = librosa.load(args.wav, sr=SR, mono=True)
     dur_s = len(wav) / SR
     print(f"  {args.wav}  时长 {dur_s:.1f}s ({dur_s/60:.1f} min)")
+
+    if args.volume_boost != 1.0:
+        if args.volume_boost == 0.0:
+            # 自动峰值标准化 (Peak Normalization): 找到全局最大音量，按比例整体拉满到 1.0 (0 dBFS)
+            peak = np.max(np.abs(wav))
+            if peak > 0:
+                wav = wav / peak
+            print(f"  [VOLUME] 已执行自动峰值标准化，原峰值 {peak:.4f}，现已整体拉满到最大音量")
+        else:
+            # 强制按倍数放大，并使用 clip 防止过载爆音 (Hard Clipping)
+            wav = wav * args.volume_boost
+            wav = np.clip(wav, -1.0, 1.0)
+            print(f"  [VOLUME] 音量已强制放大 {args.volume_boost} 倍，并执行防爆音压限")
 
     # ─── 2. Denoise ───
     if not args.denoise:
