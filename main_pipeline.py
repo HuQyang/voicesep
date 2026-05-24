@@ -62,8 +62,6 @@ def _release_model(module, attr: str):
         _free_gpu()
 
 
-import os
-
 def get_next_filepath(filepath: str) -> str:
     """
     自动递增文件名避免覆盖。

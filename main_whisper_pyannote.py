@@ -426,6 +426,29 @@ def apply_enroll_db(
     return sentences
 
 
+def get_next_filepath(filepath: str) -> str:
+    """
+    自动递增文件名避免覆盖。
+    传入 'result/xxx.json'，若已存在，则返回 'result/xxx_1.json'，以此类推。
+    """
+    # 如果最原始的文件名还不存在，直接用它
+    if not os.path.exists(filepath):
+        return filepath
+        
+    # 拆分路径、文件名和后缀
+    base_dir = os.path.dirname(filepath)
+    filename = os.path.basename(filepath)
+    name, ext = os.path.splitext(filename)
+    
+    # 开始递增寻找可用序号
+    counter = 1
+    while True:
+        new_name = f"{name}_{counter}{ext}"
+        new_path = os.path.join(base_dir, new_name)
+        if not os.path.exists(new_path):
+            return new_path
+        counter += 1
+
 # ─────────── 主流程 ───────────
 
 def main():
@@ -559,6 +582,16 @@ def main():
             p["speaker"] = f"spk_{sp}" if sp is not None else "spk_unknown"
 
     # ── 写出 ──
+
+    def _header(p):
+            tag = " [可能重叠]" if p.get("overlap") else ""
+            return f"{p['speaker']} - {_fmt_time_range(p['start'], p['end'])}{tag}"
+
+    # print(f"\n=== 转写结果 ({len(paragraphs)} 段) ===")
+    # for p in paragraphs:
+    #     print(f"\n{_header(p)}")
+    #     print(p["text"])
+        
     print(f"\n=== 写出 ===")
     out_json = [
         {
@@ -575,13 +608,33 @@ def main():
         json.dump(out_json, f, ensure_ascii=False, indent=2)
     print(f"  [save] {args.output}")
 
+    if args.output:
+            # 【改动点】获取递增后的 json 文件名
+            final_json_path = get_next_filepath(args.output)
+            
+            results_json = [
+                {"start": round(p["start"]/1000, 2),
+                 "end": round(p["end"]/1000, 2),
+                 "speaker": p["speaker"],
+                 "overlap": p.get("overlap", False),
+                 "text": p["text"]}
+                for p in paragraphs
+            ]
+            # 【改动点】写入新文件名
+            with open(final_json_path, "w", encoding="utf-8") as f:
+                json.dump(results_json, f, ensure_ascii=False, indent=2)
+            print(f"\n[saved json] {final_json_path}")
+
     if args.output_txt:
-        with open(args.output_txt, "w", encoding="utf-8") as f:
+        # 【改动点】获取递增后的 txt 文件名
+        final_txt_path = get_next_filepath(args.output_txt)
+        
+        with open(final_txt_path, "w", encoding="utf-8") as f:
             f.write(f"{os.path.basename(args.wav)}\n\n")
             for p in paragraphs:
-                f.write(f"{p['speaker']} - {_fmt_time(p['start'])}-{_fmt_time(p['end'])}\n")
+                f.write(f"{_header(p)}\n")
                 f.write(f"{p['text']}\n\n")
-        print(f"  [save] {args.output_txt}")
+        print(f"[saved txt ] {os.path.abspath(final_txt_path)}")
 
     # 清理临时降噪文件
     if args.denoise and wav_path != args.wav:
