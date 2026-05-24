@@ -101,15 +101,17 @@ def pick_best_ref_segment(wav, segments, kept_chunks, labels, spk_id,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wav", required=True, help="输入会议音频")
-    ap.add_argument("--num-spk", type=int, default=None, help="已知人数 (最稳)")
-    ap.add_argument("--threshold", type=float, default=0.7, help="AHC 距离阈值, 不传 num-spk 时用")
+    file_nm = "钱部长数据融合沟通"
+    ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
+    ap.add_argument("--num-spk", type=int, default=5, help="已知人数 (最稳)")
+    ap.add_argument("--threshold", type=float, default=0.5, help="AHC 距离阈值, 不传 num-spk 时用")
     ap.add_argument("--names", default=None, help="可选: 逗号分隔的 spk 名字 (按聚类顺序), 如 '王总,毕姐,小雨'")
-    ap.add_argument("--db", default="speakers/db.npz", help="声纹库 .npz 路径")
+    ap.add_argument("--db", default=f"speakers/{file_nm}_db.npz", help="声纹库 .npz 路径")
     ap.add_argument("--refs-dir", default="speakers/refs", help="代表 wav 保存目录")
     ap.add_argument("--ref-min-dur", type=float, default=3.0)
     ap.add_argument("--ref-max-dur", type=float, default=10.0)
     ap.add_argument("--overwrite", action="store_true", help="同名 spk 直接覆盖")
+    ap.add_argument("--embedder-model", default=None)
 
     # 复用主管线参数
     ap.add_argument("--denoise", action=argparse.BooleanOptionalAction, default=True)
@@ -192,6 +194,9 @@ def main():
         # 5. 注册到 SpeakerDB
         print(f"\n=== [5/5] 注册到 SpeakerDB ===")
         db = SpeakerDB(args.db)
+        # if args.embedder_model:
+        #     from speaker_db import set_embedder_model
+        #     set_embedder_model(args.embedder_model)
         for sid, (name, ref_path, ss, se, pure, rms) in chosen_refs.items():
             if (not args.overwrite) and name in db.names:
                 print(f"  [skip] {name} 已存在, 用 --overwrite 强制覆盖")

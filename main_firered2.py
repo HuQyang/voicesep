@@ -448,12 +448,12 @@ def main():
     ap.add_argument("--firered-batch", type=int, default=1,
                     help="一次喂 FireRedASR 的段数 (3090 24G 建议 1, 大于 1 容易 OOM)")
     ap.add_argument("--beam-size", type=int, default=3, help="解码 beam, 1=贪心更省显存")
-    ap.add_argument("--firered-max-seg", type=float, default=30.0,
+    ap.add_argument("--firered-max-seg", type=float, default=50.0,
                     help="ASR 输入 segment 长度上限(s), 超过强切. FireRedASR 训练 max=60s")
     ap.add_argument("--asr-merge", action=argparse.BooleanOptionalAction, default=True,
                     help="合并相邻短 VAD 段到 ~target_s, 喂 FireRedASR 更长上下文, "
                          "ASR 后用 turns 时间戳切回多 speaker 子段. 默认开启.")
-    ap.add_argument("--asr-merge-target-s", type=float, default=30.0,
+    ap.add_argument("--asr-merge-target-s", type=float, default=25.0,
                     help="ASR 合并目标长度(s). 默认 25, 接近 FireRedASR 训练 30s 上限")
     ap.add_argument("--overlap-engine", choices=["firered", "paraformer"], default="paraformer",
                     help="重叠区分离后的两路用哪个 ASR. paraformer 在 BSS 伪影上幻觉少, 推荐")
@@ -462,10 +462,10 @@ def main():
     ap.add_argument("--anti-hallu", action=argparse.BooleanOptionalAction, default=True,
                     help="FireRedASR 输出命中黑词 (宝宝/睡觉/王者荣耀...) → 用 Paraformer 重转该段")
     # 复用 main_pipeline 的参数
-    ap.add_argument("--num-spk", type=int, default=3)
+    ap.add_argument("--num-spk", type=int, default=5)
     ap.add_argument("--threshold", type=float, default=0.6)
-    ap.add_argument("--enroll-db", default="speaker/db.npz")
-    ap.add_argument("--match-threshold", type=float, default=0.55)
+    ap.add_argument("--enroll-db", default=f"speaker/{file_nm}_db.npz")
+    ap.add_argument("--match-threshold", type=float, default=0.45)
     ap.add_argument("--itn", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--wetext-itn", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--denoise", action=argparse.BooleanOptionalAction, default=False)
@@ -488,13 +488,13 @@ def main():
     ap.add_argument("--min-dur", type=int, default=400)
     ap.add_argument("--chunk-max", type=int, default=2000)
     ap.add_argument("--chunk-hop", type=int, default=1000)
-    ap.add_argument("--output", default=f"result/{file_nm}_firered3.json")
+    ap.add_argument("--output", default=f"result/{file_nm}_fireredasr2.json")
     ap.add_argument("--output-dir", default="result")
-    ap.add_argument("--output-txt", default=f"result/{file_nm}_firered3.txt")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_fireredasr2.txt")
     ap.add_argument("--para-gap", type=int, default=800)
-    ap.add_argument("--para-max-dur", type=int, default=60000)
+    ap.add_argument("--para-max-dur", type=int, default=10000)
     ap.add_argument("--para-max-chars", type=int, default=600)
-    ap.add_argument("--post-merge-gap", type=int, default=5000,
+    ap.add_argument("--post-merge-gap", type=int, default=3000,
                     help="后合并: 同 spk + 都非 overlap, 间隔(ms)<=此值则合并")
     ap.add_argument("--post-merge-max-dur", type=int, default=100000,
                     help="后合并硬上限: 合并后段最大时长(ms), 默认 3 分钟")

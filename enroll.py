@@ -240,7 +240,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--db", default="speakers/db.npz", help="声纹库路径")
-    ap.add_argument("--embedder-model", default=None,
+    ap.add_argument("--embedder-model", default="iic/speech_eres2net_large_200k_sv_zh-cn_16k-common",
                     help="覆盖默认声纹模型 (必须与注册时一致)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

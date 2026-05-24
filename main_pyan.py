@@ -142,6 +142,276 @@ def run_vad(wav_path: str, engine: str = "fsmn",
                         max_end_silence_ms=fsmn_end_sil_ms)
 
 
+
+_pyannote_diar_pipeline = None
+_pyannote_seg_inference = None
+
+
+def get_pyannote_token(hf_token: str = "") -> str:
+    token = hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or ""
+    if not token:
+        raise RuntimeError(
+            "缺少 HuggingFace token。请先 export HF_TOKEN=hf_xxx，"
+            "并确认已经在 HuggingFace 接受 pyannote 模型条款。"
+        )
+    return token
+
+
+def get_pyannote_diarization_pipeline(
+    model_id: str = "pyannote/speaker-diarization-3.1",
+    hf_token: str = "",
+    device: str = None,
+):
+    """加载 pyannote 完整说话人分离 pipeline。"""
+    global _pyannote_diar_pipeline
+    if _pyannote_diar_pipeline is not None:
+        return _pyannote_diar_pipeline
+
+    from pyannote.audio import Pipeline
+
+    token = get_pyannote_token(hf_token)
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    print(f"[pyannote] 加载 diarization pipeline: {model_id}")
+    pipe = Pipeline.from_pretrained(model_id, use_auth_token=token)
+    pipe.to(torch.device(device))
+    print(f"[pyannote] device = {device}")
+
+    _pyannote_diar_pipeline = pipe
+    return pipe
+
+
+def run_pyannote_diarization(
+    wav_path: str,
+    num_spk: int = None,
+    min_spk: int = None,
+    max_spk: int = None,
+    model_id: str = "pyannote/speaker-diarization-3.1",
+    hf_token: str = "",
+    device: str = None,
+    merge_gap_ms: int = 250,
+    min_turn_ms: int = 250,
+):
+    """
+    完整替换：FSMN-VAD + ERes2Net embedding + AHC。
+
+    返回：
+      turns = [(start_ms, end_ms, spk_int), ...]
+      label_to_id = {pyannote_label: spk_int}
+    """
+    pipe = get_pyannote_diarization_pipeline(
+        model_id=model_id,
+        hf_token=hf_token,
+        device=device,
+    )
+
+    kwargs = {}
+    if num_spk is not None and int(num_spk) > 0:
+        kwargs["num_speakers"] = int(num_spk)
+    else:
+        if min_spk is not None:
+            kwargs["min_speakers"] = int(min_spk)
+        if max_spk is not None:
+            kwargs["max_speakers"] = int(max_spk)
+
+    print(f"[pyannote] diarization kwargs = {kwargs}")
+    with torch.no_grad():
+        annotation = pipe(wav_path, **kwargs)
+
+    label_to_id = {}
+    raw_turns = []
+
+    for segment, _track, label in annotation.itertracks(yield_label=True):
+        if label not in label_to_id:
+            label_to_id[label] = len(label_to_id)
+        s_ms = int(round(segment.start * 1000))
+        e_ms = int(round(segment.end * 1000))
+        if e_ms - s_ms < min_turn_ms:
+            continue
+        raw_turns.append((s_ms, e_ms, label_to_id[label]))
+
+    raw_turns.sort(key=lambda x: (x[0], x[1], x[2]))
+
+    # 合并相邻同 speaker 的短间隔碎片
+    turns = []
+    for s_ms, e_ms, spk in raw_turns:
+        if turns and turns[-1][2] == spk and s_ms - turns[-1][1] <= merge_gap_ms:
+            turns[-1] = (turns[-1][0], max(turns[-1][1], e_ms), spk)
+        else:
+            turns.append((s_ms, e_ms, spk))
+
+    print(f"[pyannote] raw_turns={len(raw_turns)}, merged_turns={len(turns)}, speakers={len(label_to_id)}")
+    print(f"[pyannote] label_to_id={label_to_id}")
+    return turns, label_to_id
+
+
+def get_pyannote_segmentation_inference(
+    model_id: str = "pyannote/segmentation-3.0",
+    hf_token: str = "",
+    device: str = None,
+):
+    """加载 pyannote segmentation 模型，只用来做 VAD。"""
+    global _pyannote_seg_inference
+    if _pyannote_seg_inference is not None:
+        return _pyannote_seg_inference
+
+    from pyannote.audio import Model, Inference
+
+    token = get_pyannote_token(hf_token)
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    print(f"[pyannote] 加载 segmentation model: {model_id}")
+    model = Model.from_pretrained(model_id, use_auth_token=token)
+    model.to(torch.device(device))
+
+    inference = Inference(
+        model,
+        window="sliding",
+        duration=5.0,
+        step=0.5,
+        device=torch.device(device),
+    )
+    _pyannote_seg_inference = inference
+    return inference
+
+
+def _activity_to_vad_segments(
+    prob: np.ndarray,
+    frame_starts_s: np.ndarray,
+    frame_step_s: float,
+    onset: float = 0.50,
+    offset: float = 0.35,
+    min_duration_on_s: float = 0.25,
+    min_duration_off_s: float = 0.20,
+    pad_onset_s: float = 0.05,
+    pad_offset_s: float = 0.05,
+    audio_dur_s: float = 0.0,
+):
+    """把 frame-level speech probability 转成 [[start_ms, end_ms], ...]。"""
+    segments = []
+    active = False
+    start_s = None
+
+    for i, p in enumerate(prob):
+        t = float(frame_starts_s[i])
+        if (not active) and p >= onset:
+            active = True
+            start_s = t
+        elif active and p < offset:
+            end_s = t + frame_step_s
+            segments.append([start_s, end_s])
+            active = False
+            start_s = None
+
+    if active and start_s is not None:
+        segments.append([start_s, audio_dur_s])
+
+    # padding
+    padded = []
+    for s, e in segments:
+        s = max(0.0, s - pad_onset_s)
+        e = min(audio_dur_s, e + pad_offset_s)
+        if e > s:
+            padded.append([s, e])
+
+    # 合并短静音
+    merged = []
+    for s, e in padded:
+        if merged and s - merged[-1][1] <= min_duration_off_s:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+
+    # 删除短语音
+    merged = [[s, e] for s, e in merged if e - s >= min_duration_on_s]
+    return [[int(round(s * 1000)), int(round(e * 1000))] for s, e in merged]
+
+
+def run_vad_pyannote_segmentation(
+    wav_path: str,
+    model_id: str = "pyannote/segmentation-3.0",
+    hf_token: str = "",
+    device: str = None,
+    onset: float = 0.50,
+    offset: float = 0.35,
+    min_duration_on: float = 0.25,
+    min_duration_off: float = 0.20,
+    pad_onset: float = 0.05,
+    pad_offset: float = 0.05,
+):
+    """
+    只用 pyannote segmentation 做 VAD。
+    后面仍然可以接你原来的 ERes2Net embedding + AHC 聚类。
+    """
+    inference = get_pyannote_segmentation_inference(
+        model_id=model_id,
+        hf_token=hf_token,
+        device=device,
+    )
+
+    with torch.no_grad():
+        output = inference(wav_path)
+
+    data = np.asarray(output.data)
+    data = np.squeeze(data)
+
+    if data.ndim == 1:
+        speech_prob = data
+    else:
+        # segmentation 输出通常是 frames x local_speakers，对 speaker 轴取 max 得到 VAD 概率
+        speech_prob = data.max(axis=-1)
+
+    sw = output.sliding_window
+    n = len(speech_prob)
+    frame_starts = np.array([sw[i].start for i in range(n)], dtype=np.float32)
+    if n >= 2:
+        frame_step = float(frame_starts[1] - frame_starts[0])
+    else:
+        frame_step = float(getattr(sw, "step", 0.016))
+
+    info = sf.info(wav_path)
+    audio_dur_s = float(info.frames / info.samplerate)
+
+    segments = _activity_to_vad_segments(
+        speech_prob,
+        frame_starts,
+        frame_step,
+        onset=onset,
+        offset=offset,
+        min_duration_on_s=min_duration_on,
+        min_duration_off_s=min_duration_off,
+        pad_onset_s=pad_onset,
+        pad_offset_s=pad_offset,
+        audio_dur_s=audio_dur_s,
+    )
+
+    print(
+        f"[pyannote-seg-vad] {len(segments)} segments "
+        f"onset={onset}, offset={offset}, min_on={min_duration_on}, min_off={min_duration_off}"
+    )
+    return segments
+
+
+def print_turn_stats(turns, title="TURNS", show_n: int = 20):
+    spk_dur_ms = Counter()
+    for s, e, spk in turns:
+        spk_dur_ms[int(spk)] += max(0, e - s)
+
+    print(f"  [{title}] {len(turns)} turns, {len(spk_dur_ms)} speakers")
+    if spk_dur_ms:
+        print("  [SPK-DUR] " + " | ".join(
+            f"spk_{spk}: {dur/1000:.1f}s" for spk, dur in spk_dur_ms.most_common()
+        ))
+
+    for i, (s, e, spk) in enumerate(turns[:show_n]):
+        print(f"    turn{i:03d}: {_fmt_time_range(s, e)} spk_{spk} ({(e-s)/1000:.2f}s)")
+    if len(turns) > show_n:
+        print(f"    ... 还有 {len(turns)-show_n} 个 turns")
+
+
+
 def get_asr():
     """整段 ASR: Paraformer-large + 内置 VAD + CT-Punc + 时间戳"""
     global _asr
@@ -794,7 +1064,7 @@ def main():
     ap.add_argument("--num-spk", type=int, default=5, help="已知人数 (最稳)")
     ap.add_argument("--threshold", type=float, default=0.6, help="AHC cosine 距离阈值")
     ap.add_argument("--enroll-db", default=f'{file_nm}_db.npz', help="可选: 声纹库, 把 spk_X 替换成真名")
-    ap.add_argument("--match-threshold", type=float, default=0.45)
+    ap.add_argument("--match-threshold", type=float, default=0.55)
     ap.add_argument("--hotword", default="", help="")
     ap.add_argument("--itn", action=argparse.BooleanOptionalAction, default=True,
                     help="ITN: 中文数字 → 阿拉伯数字 (会议纪要刚需, 默认开)")
@@ -807,7 +1077,7 @@ def main():
     ap.add_argument("--vad-fsmn-max-seg-ms", type=int, default=10000,
                     help="FSMN-VAD 单段上限(ms). 默认 60000 太宽容, 多人快速轮替会"
                          "整段并入. 会议场景建议 5000-8000 强切")
-    ap.add_argument("--vad-fsmn-end-sil-ms", type=int, default=300,
+    ap.add_argument("--vad-fsmn-end-sil-ms", type=int, default=800,
                     help="FSMN-VAD 尾静音阈值(ms). 默认 800, 调小 (e.g. 300) "
                          "对快速轮替更敏感, 但会切得碎")
     ap.add_argument("--scd", action="store_true",
@@ -815,11 +1085,11 @@ def main():
                          "把长 segment 切成单说话人子段. 解决 VAD 把交替对话并成一段的问题.")
     ap.add_argument("--scd-min-seg-s", type=float, default=5.0,
                     help="SCD 只处理 > 此时长(s) 的 segment, 短段不浪费算力")
-    ap.add_argument("--scd-window-s", type=float, default=0.55,
+    ap.add_argument("--scd-window-s", type=float, default=0.75,
                     help="SCD 滑窗大小(s). 默认 0.75, 小=对快速轮替敏感")
     ap.add_argument("--scd-hop-s", type=float, default=0.1,
                     help="SCD 滑窗 hop(s). 越小越精细, 但计算量大")
-    ap.add_argument("--scd-threshold", type=float, default=0.35,
+    ap.add_argument("--scd-threshold", type=float, default=0.5,
                     help="SCD 切点 cosine 距离阈值. 0.35 灵敏 / 0.5 默认 / 0.65 保守")
     ap.add_argument("--scd-min-spk-dur-s", type=float, default=0.8,
                     help="SCD 切出来的子段最短时长(s), 防过度切碎")
@@ -853,8 +1123,8 @@ def main():
                     help="长段滑窗最大长度(ms), 聚类粒度")
     ap.add_argument("--chunk-hop", type=int, default=1000,
                     help="长段滑窗 hop(ms)")
-    ap.add_argument("--output", default=f"result/{file_nm}_seacopara.json", help="可选: 保存 .json")
-    ap.add_argument("--output-txt", default=f"result/{file_nm}_seacopara.txt", help="可选: 保存可读 .txt (一行一条 turn)")
+    ap.add_argument("--output", default=f"result/{file_nm}_pyan.json", help="可选: 保存 .json")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_pyan.txt", help="可选: 保存可读 .txt (一行一条 turn)")
     ap.add_argument("--para-gap", type=int, default=500,
                     help="段落分割: 句子间隙(ms) > 此值时另起一段")
     ap.add_argument("--para-max-dur", type=int, default=10000,
@@ -870,6 +1140,26 @@ def main():
     ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_seacopara",
                     help="若指定, 每个阶段 dump 一份 JSON 到此目录 "
                          "(vad/turns/bss/asr/final), 用于演示和调参定位")
+
+
+    ap.add_argument("--diar-backend", choices=["local", "pyannote", "pyannote-seg-vad"], default="pyannote",
+                help="local=原 FSMN/Silero+ERes2Net；pyannote=完整说话人分离；pyannote-seg-vad=只用 pyannote segmentation 做 VAD")
+    ap.add_argument("--pyannote-model", default="pyannote/speaker-diarization-3.1",
+                    help="pyannote 完整 diarization pipeline")
+    ap.add_argument("--pyannote-seg-model", default="pyannote/segmentation-3.0",
+                    help="pyannote segmentation VAD 模型")
+    ap.add_argument("--hf-token", default=os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or "",
+                    help="HuggingFace token，也可用环境变量 HF_TOKEN")
+    ap.add_argument("--pyannote-device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--min-spk", type=int, default=None)
+    ap.add_argument("--max-spk", type=int, default=None)
+    ap.add_argument("--pyannote-merge-gap-ms", type=int, default=250)
+    ap.add_argument("--pyannote-min-turn-ms", type=int, default=250)
+    ap.add_argument("--pyannote-vad-onset", type=float, default=0.50)
+    ap.add_argument("--pyannote-vad-offset", type=float, default=0.35)
+    ap.add_argument("--pyannote-vad-min-on", type=float, default=0.25)
+    ap.add_argument("--pyannote-vad-min-off", type=float, default=0.20)
+
     args = ap.parse_args()
 
     # 在任何 embedding 调用之前切换模型
@@ -905,103 +1195,196 @@ def main():
     try:
         # ─── 3. VAD + 切段 + 聚类 ───
         print(f"\n=== [3/5] VAD ({args.vad}) + 声纹聚类 ===")
-        raw_segments = run_vad(
-            clean_path, engine=args.vad,
-            fsmn_max_seg_ms=args.vad_fsmn_max_seg_ms,
-            fsmn_end_sil_ms=args.vad_fsmn_end_sil_ms,
-        )
-        print(f"  [VAD]   {len(raw_segments)} segments")
-        for i, (s_ms, e_ms) in enumerate(raw_segments[: args.vad_show_n if args.vad_show_n > 0 else len(raw_segments)]):
-            print(f"    seg{i:03d}: {_fmt_time_range(s_ms, e_ms)}  ({(e_ms-s_ms)/1000:.2f}s)")
-        if args.vad_show_n > 0 and len(raw_segments) > args.vad_show_n:
-            print(f"    ... 还有 {len(raw_segments) - args.vad_show_n} 段未列出 (--vad-show-n 控制)")
 
-        _dump_debug(args.debug_dir, "01_vad_raw.json", {
-            "engine": args.vad,
-            "count": len(raw_segments),
-            "segments": [{"start_s": round(s/1000, 2), "end_s": round(e/1000, 2),
-                          "dur_s": round((e-s)/1000, 2)}
-                         for s, e in raw_segments],
-        })
+        print(f"\n=== [3/5] Diarization backend: {args.diar_backend} ===")
 
-        segments = merge_segments(raw_segments, gap_threshold_ms=args.merge_gap, min_duration_ms=args.min_dur)
-        print(f"  [MERGE] {len(segments)} segments (gap<{args.merge_gap}ms 合并, <{args.min_dur}ms 丢弃)")
+        centroids = {}
+        spk_ids = []
 
-        # ── SCD: 长段按 embedding 距离切说话人切换点 ──
-        if args.scd:
-            print(f"  [SCD]   开始检测 (window={args.scd_window_s}s, hop={args.scd_hop_s}s, "
-                  f"threshold={args.scd_threshold}, 只处理 > {args.scd_min_seg_s}s 的段)")
-            segments, scd_stats = split_segments_by_scd(
-                wav, segments,
-                min_segment_for_scd_s=args.scd_min_seg_s,
-                window_s=args.scd_window_s,
-                hop_s=args.scd_hop_s,
-                distance_threshold=args.scd_threshold,
-                min_speaker_dur_s=args.scd_min_spk_dur_s,
-                sr=SR,
-                verbose=True,
+        if args.diar_backend == "pyannote":
+            # 完整 pyannote diarization：直接得到 turns
+            turns, pyannote_label_map = run_pyannote_diarization(
+                clean_path,
+                num_spk=args.num_spk,
+                min_spk=args.min_spk,
+                max_spk=args.max_spk,
+                model_id=args.pyannote_model,
+                hf_token=args.hf_token,
+                device=args.pyannote_device,
+                merge_gap_ms=args.pyannote_merge_gap_ms,
+                min_turn_ms=args.pyannote_min_turn_ms,
             )
-            print(f"  [SCD]   {scd_stats['n_segments_in']} → {scd_stats['n_segments_out']} 段 "
-                  f"(共 {scd_stats['n_scd_run']} 段被分析, 找到 {scd_stats['n_total_change_points']} 个切点)")
-            # 距离统计帮你定位阈值
-            if scd_stats["per_segment"]:
-                d_maxs = [s["distance_max"] for s in scd_stats["per_segment"] if s.get("distance_max") is not None]
-                d_means = [s["distance_mean"] for s in scd_stats["per_segment"] if s.get("distance_mean") is not None]
-                if d_maxs:
-                    print(f"  [SCD]   距离分布: max 中位 {sorted(d_maxs)[len(d_maxs)//2]:.3f} / "
-                          f"mean 中位 {sorted(d_means)[len(d_means)//2]:.3f} "
-                          f"(当前阈值 {args.scd_threshold:.2f}; "
-                          f"如果 0 切点请把阈值调到约 max 中位的 80%)")
-            # SCD 后段长前 20
-            show_n = min(20, len(segments))
-            print(f"  [SCD]   切分后前 {show_n} 段:")
-            for i, (s, e) in enumerate(segments[:show_n]):
-                print(f"    sub{i:03d}: {_fmt_time_range(s, e)}  ({(e-s)/1000:.2f}s)")
-            _dump_debug(args.debug_dir, "02b_scd.json", scd_stats)
+            spk_ids = sorted(set(int(spk) for _, _, spk in turns))
+            print_turn_stats(turns, title="PYANNOTE")
 
-        chunks = chunk_long_segments(segments, max_dur_ms=args.chunk_max, hop_ms=args.chunk_hop)
-        print(f"  [CHUNK] {len(chunks)} chunks (>{args.chunk_max}ms 按 {args.chunk_hop}ms hop 切)")
+            _dump_debug(args.debug_dir, "03_turns_pyannote.json", {
+                "backend": "pyannote",
+                "model": args.pyannote_model,
+                "num_spk_requested": args.num_spk,
+                "min_spk": args.min_spk,
+                "max_spk": args.max_spk,
+                "speaker_count": len(spk_ids),
+                "turn_count": len(turns),
+                "label_map": {str(k): int(v) for k, v in pyannote_label_map.items()},
+                "turns": [
+                    {
+                        "start_s": round(s / 1000, 2),
+                        "end_s": round(e / 1000, 2),
+                        "dur_s": round((e - s) / 1000, 2),
+                        "speaker": f"spk_{spk}",
+                    }
+                    for s, e, spk in turns
+                ],
+            })
 
-        _dump_debug(args.debug_dir, "02_vad_merged.json", {
-            "merged_count": len(segments),
-            "chunk_count": len(chunks),
-            "merge_gap_ms": args.merge_gap,
-            "min_dur_ms": args.min_dur,
-            "merged_segments": [{"start_s": round(s/1000, 2), "end_s": round(e/1000, 2),
-                                 "dur_s": round((e-s)/1000, 2)}
-                                for s, e in segments],
-            "chunks": [{"start_s": round(s/1000, 2), "end_s": round(e/1000, 2)}
-                       for s, e in chunks],
-        })
-
-        embs, kept_chunks = extract_chunk_embs(wav, chunks, min_dbfs=args.min_dbfs)
-        print(f"  [EMB]   {len(embs)} embeddings")
-
-        if len(embs) < 2:
-            print("  embedding 不足 2 个, 退出")
-            return
-
-        labels = cluster_embs(embs, num_spk=args.num_spk, threshold=args.threshold,
-                              whiten=args.whiten)
-        centroids = compute_centroids(embs, labels)
-        spk_ids = sorted(centroids.keys())
-        print(f"  [CLUS]  发现 {len(spk_ids)} 个说话人簇: {spk_ids}")
-
-        if args.diar_mode == "chunk":
-            turns = chunks_to_fine_turns(kept_chunks, labels, smooth=args.diar_smooth)
-            print(f"  [TURNS] {len(turns)} turns (chunk-level, smooth={args.diar_smooth})")
         else:
-            turns = segments_to_turns(segments, chunks, kept_chunks, labels)
-            print(f"  [TURNS] {len(turns)} turns (segment-vote)")
+            # local 或 pyannote-seg-vad：仍走你原来的 embedding + AHC 聚类
+            if args.diar_backend == "pyannote-seg-vad":
+                raw_segments = run_vad_pyannote_segmentation(
+                    clean_path,
+                    model_id=args.pyannote_seg_model,
+                    hf_token=args.hf_token,
+                    device=args.pyannote_device,
+                    onset=args.pyannote_vad_onset,
+                    offset=args.pyannote_vad_offset,
+                    min_duration_on=args.pyannote_vad_min_on,
+                    min_duration_off=args.pyannote_vad_min_off,
+                )
+            else:
+                raw_segments = run_vad(
+                    clean_path,
+                    engine=args.vad,
+                    fsmn_max_seg_ms=args.vad_fsmn_max_seg_ms,
+                    fsmn_end_sil_ms=args.vad_fsmn_end_sil_ms,
+                )
 
-        # cam++ 输出: 每个 spk 的总时长 (用来快速定位坍缩问题, 例如 spk_0 吃掉 40 分钟)
-        spk_dur_ms = Counter()
-        for _ts, _te, _spk in turns:
-            spk_dur_ms[int(_spk)] += (_te - _ts)
-        print(f"  [SPK-DUR] " + " | ".join(
-            f"spk_{spk}: {dur/1000:.1f}s"
-            for spk, dur in spk_dur_ms.most_common()
-        ))
+            print(f"  [VAD]   {len(raw_segments)} segments")
+            show_count = len(raw_segments) if args.vad_show_n == 0 else max(0, args.vad_show_n)
+            if args.vad_show_n >= 0:
+                for i, (s_ms, e_ms) in enumerate(raw_segments[:show_count]):
+                    print(f"    seg{i:03d}: {_fmt_time_range(s_ms, e_ms)}  ({(e_ms - s_ms) / 1000:.2f}s)")
+                if args.vad_show_n > 0 and len(raw_segments) > args.vad_show_n:
+                    print(f"    ... 还有 {len(raw_segments) - args.vad_show_n} 段未列出 (--vad-show-n 控制)")
+
+            _dump_debug(args.debug_dir, "01_vad_raw.json", {
+                "engine": args.diar_backend,
+                "count": len(raw_segments),
+                "segments": [
+                    {
+                        "start_s": round(s / 1000, 2),
+                        "end_s": round(e / 1000, 2),
+                        "dur_s": round((e - s) / 1000, 2),
+                    }
+                    for s, e in raw_segments
+                ],
+            })
+
+            segments = merge_segments(
+                raw_segments,
+                gap_threshold_ms=args.merge_gap,
+                min_duration_ms=args.min_dur,
+            )
+            print(f"  [MERGE] {len(segments)} segments (gap<{args.merge_gap}ms 合并, <{args.min_dur}ms 丢弃)")
+
+            if args.scd:
+                print(
+                    f"  [SCD]   开始检测 (window={args.scd_window_s}s, hop={args.scd_hop_s}s, "
+                    f"threshold={args.scd_threshold}, 只处理 > {args.scd_min_seg_s}s 的段)"
+                )
+                segments, scd_stats = split_segments_by_scd(
+                    wav,
+                    segments,
+                    min_segment_for_scd_s=args.scd_min_seg_s,
+                    window_s=args.scd_window_s,
+                    hop_s=args.scd_hop_s,
+                    distance_threshold=args.scd_threshold,
+                    min_speaker_dur_s=args.scd_min_spk_dur_s,
+                    sr=SR,
+                    verbose=True,
+                )
+                print(
+                    f"  [SCD]   {scd_stats['n_segments_in']} → {scd_stats['n_segments_out']} 段 "
+                    f"(共 {scd_stats['n_scd_run']} 段被分析, 找到 {scd_stats['n_total_change_points']} 个切点)"
+                )
+                _dump_debug(args.debug_dir, "02b_scd.json", scd_stats)
+
+            chunks = chunk_long_segments(segments, max_dur_ms=args.chunk_max, hop_ms=args.chunk_hop)
+            print(f"  [CHUNK] {len(chunks)} chunks (>{args.chunk_max}ms 按 {args.chunk_hop}ms hop 切)")
+
+            _dump_debug(args.debug_dir, "02_vad_merged.json", {
+                "merged_count": len(segments),
+                "chunk_count": len(chunks),
+                "merge_gap_ms": args.merge_gap,
+                "min_dur_ms": args.min_dur,
+                "merged_segments": [
+                    {
+                        "start_s": round(s / 1000, 2),
+                        "end_s": round(e / 1000, 2),
+                        "dur_s": round((e - s) / 1000, 2),
+                    }
+                    for s, e in segments
+                ],
+                "chunks": [
+                    {"start_s": round(s / 1000, 2), "end_s": round(e / 1000, 2)}
+                    for s, e in chunks
+                ],
+            })
+
+            embs, kept_chunks = extract_chunk_embs(wav, chunks, min_dbfs=args.min_dbfs)
+            print(f"  [EMB]   {len(embs)} embeddings")
+
+            if len(embs) < 2:
+                print("  embedding 不足 2 个, 退出")
+                return
+
+            labels = cluster_embs(
+                embs,
+                num_spk=args.num_spk,
+                threshold=args.threshold,
+                whiten=args.whiten,
+            )
+            centroids = compute_centroids(embs, labels)
+            spk_ids = sorted(centroids.keys())
+            print(f"  [CLUS]  发现 {len(spk_ids)} 个说话人簇: {spk_ids}")
+
+            if args.diar_mode == "chunk":
+                turns = chunks_to_fine_turns(kept_chunks, labels, smooth=args.diar_smooth)
+                print(f"  [TURNS] {len(turns)} turns (chunk-level, smooth={args.diar_smooth})")
+            else:
+                turns = segments_to_turns(segments, chunks, kept_chunks, labels)
+                print(f"  [TURNS] {len(turns)} turns (segment-vote)")
+
+            print_turn_stats(turns, title="LOCAL")
+
+            spk_dur_ms = Counter()
+            for _ts, _te, _spk in turns:
+                spk_dur_ms[int(_spk)] += (_te - _ts)
+
+            _dump_debug(args.debug_dir, "03_turns.json", {
+                "diar_mode": args.diar_mode,
+                "backend": args.diar_backend,
+                "num_spk_requested": args.num_spk,
+                "threshold": args.threshold,
+                "spk_count": len(spk_ids),
+                "spk_total_duration_s": {
+                    f"spk_{spk}": round(dur / 1000, 1)
+                    for spk, dur in spk_dur_ms.most_common()
+                },
+                "turn_count": len(turns),
+                "turns": [
+                    {
+                        "start_s": round(s / 1000, 2),
+                        "end_s": round(e / 1000, 2),
+                        "dur_s": round((e - s) / 1000, 2),
+                        "speaker": f"spk_{spk}",
+                    }
+                    for s, e, spk in turns
+                ],
+            })
+        
+
+
+
         _dump_debug(args.debug_dir, "03_turns.json", {
             "diar_mode": args.diar_mode,
             "num_spk_requested": args.num_spk,
@@ -1173,7 +1556,10 @@ def main():
             sentences.sort(key=lambda r: (r["start"], r.get("speaker") if r.get("speaker") is not None else -1))
 
         # 可选: SpeakerDB 替换为真名
-        if args.enroll_db and os.path.exists(args.enroll_db):
+
+        # pyannote 完整 diarization 模式下默认没有 ERes2Net centroids，
+        # 所以这里自动 fallback 到 spk_0 / spk_1。
+        if args.enroll_db and os.path.exists(args.enroll_db) and centroids:
             db = SpeakerDB(args.enroll_db)
             spk_names = {}
             for spk, c in centroids.items():
@@ -1181,7 +1567,7 @@ def main():
                 spk_names[spk] = name if name else f"spk_{spk}"
             print(f"  [ENROLL] spk → 真名: {spk_names}")
         else:
-            spk_names = {spk: f"spk_{spk}" for spk in centroids}
+            spk_names = {spk: f"spk_{spk}" for spk in sorted(set(t[2] for t in turns))}
 
         # 合段落
         for s in sentences:

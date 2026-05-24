@@ -374,9 +374,9 @@ def main():
     ap = argparse.ArgumentParser()
     # file_nm = "2026-03-18 14_28 记录"
     # file_nm = "车辆管理业务研讨"
-    file_nm = "04.21公交数据要素比赛决赛培训"
+    # file_nm = "04.21公交数据要素比赛决赛培训"
     # file_nm = "2025-09-30 15_56 记录"
-    # file_nm = "钱部长数据融合沟通"
+    file_nm = "钱部长数据融合沟通"
     ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
     ap.add_argument("--model-dir", default="pretrained/FireRedASR-AED-L", help="FireRedASR 权重目录")
     ap.add_argument("--variant", choices=["aed", "llm"], default="aed")

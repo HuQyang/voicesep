@@ -435,9 +435,9 @@ def main():
     ap = argparse.ArgumentParser()
     # file_nm = "2026-03-18 14_28 记录"
     # file_nm = "车辆管理业务研讨"
-    # file_nm = "04.21公交数据要素比赛决赛培训"
+    file_nm = "04.21公交数据要素比赛决赛培训"
     # file_nm = "2025-09-30 15_56 记录"
-    file_nm = "钱部长数据融合沟通"
+    # file_nm = "钱部长数据融合沟通"
 
     ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
     ap.add_argument("--model-dir", default="pretrained/FireRedASR2-AED", help="FireRedASR2 权重目录")
@@ -514,7 +514,7 @@ def main():
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")
     ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_firered2S",
                     help="若指定, 每个阶段 dump JSON 到此目录")
-    ap.add_argument("--volume-boost", type=float, default=0.0,
+    ap.add_argument("--volume-boost", type=float, default=1.0,
                     help="放大音量倍数。设为 0.0 时执行自动峰值标准化(自动拉到最大不爆音音量)。")
     
     args = ap.parse_args()

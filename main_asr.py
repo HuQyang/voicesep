@@ -33,8 +33,6 @@ import soundfile as sf
 import torch
 from funasr import AutoModel
 
-
-
 import main_bss  # 需要操作其内部 _denoise_pipe / _bss_pipe 引用以释放显存
 from speaker_db import extract_embedding_from_wave, SpeakerDB
 from main_diarization import merge_segments, chunk_long_segments
@@ -61,31 +59,6 @@ def _release_model(module, attr: str):
         setattr(module, attr, None)
         _free_gpu()
 
-
-import os
-
-def get_next_filepath(filepath: str) -> str:
-    """
-    自动递增文件名避免覆盖。
-    传入 'result/xxx.json'，若已存在，则返回 'result/xxx_1.json'，以此类推。
-    """
-    # 如果最原始的文件名还不存在，直接用它
-    if not os.path.exists(filepath):
-        return filepath
-        
-    # 拆分路径、文件名和后缀
-    base_dir = os.path.dirname(filepath)
-    filename = os.path.basename(filepath)
-    name, ext = os.path.splitext(filename)
-    
-    # 开始递增寻找可用序号
-    counter = 1
-    while True:
-        new_name = f"{name}_{counter}{ext}"
-        new_path = os.path.join(base_dir, new_name)
-        if not os.path.exists(new_path):
-            return new_path
-        counter += 1
 
 # ─────────── 懒加载 VAD / ASR ───────────
 _vad_fsmn = None
@@ -142,36 +115,47 @@ def run_vad(wav_path: str, engine: str = "fsmn",
                         max_end_silence_ms=fsmn_end_sil_ms)
 
 
+# 默认 ASR 模型. 用 set_asr_model() 切换. 推荐选项 (按场景):
+#   iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch  (默认, 准, 支持 hotword)
+#   FunAudioLLM/Fun-ASR-Nano-2512                                                 (轻量, 速度快)
+#   paraformer-zh                                                                 (经典 Paraformer-large)
+_asr_model_id = "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+
+
+def set_asr_model(model_id: str):
+    """运行时切换 ASR 模型. 下一次 get_asr() 会重新加载."""
+    global _asr_model_id, _asr
+    if model_id and model_id != _asr_model_id:
+        print(f"[asr] 切换模型: {_asr_model_id} → {model_id}")
+        _asr_model_id = model_id
+        _asr = None
+
+
 def get_asr():
-    """整段 ASR: Paraformer-large + 内置 VAD + CT-Punc + 时间戳"""
+    """
+    整段 ASR. 默认 SeACo-Paraformer (含内置 VAD + CT-Punc).
+    遇到不兼容 vad/punc 配置的模型 (Fun-ASR-Nano 等), 自动回退到无 VAD/Punc 加载.
+    """
     global _asr
     if _asr is None:
-        print("[asr] 加载 Paraformer + FSMN-VAD + CT-Punc...")
-        _asr = AutoModel(
-            # model="paraformer-zh",
-            model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-
-            vad_model="fsmn-vad",
-            punc_model="ct-punc",
-            disable_update=True,
-        )
+        print(f"[asr] 加载 ASR: {_asr_model_id}")
+        # 先尝试: model + 内置 vad + 标点 (传统 FunASR 用法)
+        try:
+            _asr = AutoModel(
+                model=_asr_model_id,
+                vad_model="fsmn-vad",
+                punc_model="ct-punc",
+                disable_update=True,
+            )
+        except Exception as e:
+            # 某些新模型 (Fun-ASR-Nano) 不接受 vad_model/punc_model 参数, 改不带
+            print(f"  [warn] 带 VAD/Punc 加载失败, 回退无 VAD/Punc: {e}")
+            _asr = AutoModel(
+                model=_asr_model_id,
+                disable_update=True,
+            )
     return _asr
 
-# def get_asr():
-#     """
-#     换回 Paraformer-zh，但【绝对不要】加 vad_model 参数！
-#     纯中文底座，配合 CT-Punc，对 BSS 分离后的电音伪影抵抗力极强，绝不输出外语。
-#     """
-#     global _asr
-#     if _asr is None:
-#         print("[asr] 加载 Paraformer-zh (纯中文稳定底座)...")
-#         _asr = AutoModel(
-#             model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-#             punc_model="ct-punc",       # 加上标点模型
-#             disable_update=True,
-#             # 注意：千万不要写 vad_model="fsmn-vad"
-#         )
-#     return _asr
 
 _CJK_RE = re.compile(r"[一-鿿]")
 _SPACE_BETWEEN_CJK = re.compile(r"(?<=[一-鿿])\s+(?=[一-鿿])")
@@ -431,7 +415,8 @@ def asr_full(wav_path: str, hotword: str = ""):
     优先用 FunASR 自带的 sentence_info; 退化到按标点切 + token timestamp 推算时间.
     """
     asr = get_asr()
-    res = asr.generate(input=wav_path, batch_size_s=300, hotword=hotword)
+    # 【已修改】将 batch_size_s=1 改为了 batch_size=1
+    res = asr.generate(input=wav_path, batch_size=1, hotword=hotword)
     if not res:
         return []
     r = res[0]
@@ -689,7 +674,7 @@ def cluster_embs(embs: np.ndarray, num_spk: int = None, threshold: float = 0.7,
         return np.array([0], dtype=int)
 
     if whiten:
-        # 减去全局均值, 再归一化
+        # 减去全局均值,再归一化
         mean = embs.mean(axis=0, keepdims=True)
         embs = embs - mean
         print(f"  [WHITEN] 减去全局均值 (移除房间/通道共同分量)")
@@ -782,6 +767,33 @@ def chunks_to_fine_turns(kept_chunks, labels, smooth: bool = True):
     return [tuple(t) for t in turns]
 
 
+import os
+
+def get_next_filepath(filepath: str) -> str:
+    """
+    自动递增文件名避免覆盖。
+    传入 'result/xxx.json'，若已存在，则返回 'result/xxx_1.json'，以此类推。
+    """
+    # 如果最原始的文件名还不存在，直接用它
+    if not os.path.exists(filepath):
+        return filepath
+        
+    # 拆分路径、文件名和后缀
+    base_dir = os.path.dirname(filepath)
+    filename = os.path.basename(filepath)
+    name, ext = os.path.splitext(filename)
+    
+    # 开始递增寻找可用序号
+    counter = 1
+    while True:
+        new_name = f"{name}_{counter}{ext}"
+        new_path = os.path.join(base_dir, new_name)
+        if not os.path.exists(new_path):
+            return new_path
+        counter += 1
+
+
+
 # ─────────── 主流程 ───────────
 def main():
     ap = argparse.ArgumentParser()
@@ -792,9 +804,9 @@ def main():
     file_nm = "钱部长数据融合沟通"
     ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
     ap.add_argument("--num-spk", type=int, default=5, help="已知人数 (最稳)")
-    ap.add_argument("--threshold", type=float, default=0.6, help="AHC cosine 距离阈值")
-    ap.add_argument("--enroll-db", default=f'{file_nm}_db.npz', help="可选: 声纹库, 把 spk_X 替换成真名")
-    ap.add_argument("--match-threshold", type=float, default=0.45)
+    ap.add_argument("--threshold", type=float, default=0.65, help="AHC cosine 距离阈值")
+    ap.add_argument("--enroll-db", default=None, help="可选: 声纹库, 把 spk_X 替换成真名")
+    ap.add_argument("--match-threshold", type=float, default=0.55)
     ap.add_argument("--hotword", default="", help="")
     ap.add_argument("--itn", action=argparse.BooleanOptionalAction, default=True,
                     help="ITN: 中文数字 → 阿拉伯数字 (会议纪要刚需, 默认开)")
@@ -815,11 +827,11 @@ def main():
                          "把长 segment 切成单说话人子段. 解决 VAD 把交替对话并成一段的问题.")
     ap.add_argument("--scd-min-seg-s", type=float, default=5.0,
                     help="SCD 只处理 > 此时长(s) 的 segment, 短段不浪费算力")
-    ap.add_argument("--scd-window-s", type=float, default=0.55,
+    ap.add_argument("--scd-window-s", type=float, default=0.75,
                     help="SCD 滑窗大小(s). 默认 0.75, 小=对快速轮替敏感")
     ap.add_argument("--scd-hop-s", type=float, default=0.1,
                     help="SCD 滑窗 hop(s). 越小越精细, 但计算量大")
-    ap.add_argument("--scd-threshold", type=float, default=0.35,
+    ap.add_argument("--scd-threshold", type=float, default=0.5,
                     help="SCD 切点 cosine 距离阈值. 0.35 灵敏 / 0.5 默认 / 0.65 保守")
     ap.add_argument("--scd-min-spk-dur-s", type=float, default=0.8,
                     help="SCD 切出来的子段最短时长(s), 防过度切碎")
@@ -831,7 +843,7 @@ def main():
                     help="聚类前对所有 embedding 减全局均值. 远场/同房间多人录音, "
                          "embedding 被共同声学染色, 减均值能拉开说话人差异. 推荐打开.")
     ap.add_argument("--no-bss", action="store_true", help="跳过重叠检测/分离")
-    ap.add_argument("--bss-min-dur", type=float, default=5.0,
+    ap.add_argument("--bss-min-dur", type=float, default=1.0,
                     help="turn 时长 >= 此值(s) 才跑 BSS 检测重叠")
     ap.add_argument("--bss-max-dur", type=float, default=20.0,
                     help="turn 时长 > 此值(s) 跳过 BSS (Mossformer2 长输入 O(L²) 吃显存)")
@@ -839,7 +851,7 @@ def main():
                     help="BSS 检测到重叠时, 把原始混合 + 分离两路 wav 落盘到此目录 (展示用)")
     ap.add_argument("--vad-show-n", type=int, default=20,
                     help="VAD 打印前 N 个段的 start-end (0=全打印, -1=不打印)")
-    ap.add_argument("--diar-mode", choices=["segment", "chunk"], default="chunk",
+    ap.add_argument("--diar-mode", choices=["segment", "chunk"], default="segment",
                     help="diar 模式: segment=段内投票(传统稳); chunk=每个 chunk 独立投票(能 catch 快速轮替)")
     ap.add_argument("--diar-smooth", action=argparse.BooleanOptionalAction, default=True,
                     help="chunk 模式时是否平滑孤立点 (X Y X → X X X)")
@@ -847,30 +859,38 @@ def main():
                     help="emb 提取前丢弃低能量 chunk (远场设更松, 比如 -55)")
     ap.add_argument("--merge-gap", type=int, default=300,
                     help="VAD 后相邻段间隙 < 此值(ms) 则合并 (调大 → 段更连续, 同人不易裂)")
-    ap.add_argument("--min-dur", type=int, default=500,
+    ap.add_argument("--min-dur", type=int, default=600,
                     help="合并后短于此值(ms) 的段丢弃 (声纹不稳)")
-    ap.add_argument("--chunk-max", type=int, default=2000,
+    ap.add_argument("--chunk-max", type=int, default=3000,
                     help="长段滑窗最大长度(ms), 聚类粒度")
-    ap.add_argument("--chunk-hop", type=int, default=1000,
+    ap.add_argument("--chunk-hop", type=int, default=1500,
                     help="长段滑窗 hop(ms)")
-    ap.add_argument("--output", default=f"result/{file_nm}_seacopara.json", help="可选: 保存 .json")
-    ap.add_argument("--output-txt", default=f"result/{file_nm}_seacopara.txt", help="可选: 保存可读 .txt (一行一条 turn)")
-    ap.add_argument("--para-gap", type=int, default=500,
+    ap.add_argument("--output", default=f"result/{file_nm}_nano.json", help="可选: 保存 .json")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_nano.txt", help="可选: 保存可读 .txt (一行一条 turn)")
+    ap.add_argument("--para-gap", type=int, default=800,
                     help="段落分割: 句子间隙(ms) > 此值时另起一段")
-    ap.add_argument("--para-max-dur", type=int, default=10000,
+    ap.add_argument("--para-max-dur", type=int, default=60000,
                     help="段落最大时长(ms), 超过强制另起")
     ap.add_argument("--para-max-chars", type=int, default=600,
                     help="段落最大字符数, 超过强制另起")
-    ap.add_argument("--post-merge-gap", type=int, default=500,
+    ap.add_argument("--post-merge-gap", type=int, default=5000,
                     help="后合并: 同 spk + 都非 overlap, 间隔(ms)<=此值则合并")
-    ap.add_argument("--post-merge-max-dur", type=int, default=20000,
-                    help="后合并硬上限: 合并后段最大时长(ms), 默认 20 秒")
+    ap.add_argument("--post-merge-max-dur", type=int, default=120000,
+                    help="后合并硬上限: 合并后段最大时长(ms), 默认 2 分钟")
     ap.add_argument("--post-merge-max-chars", type=int, default=1500,
                     help="后合并硬上限: 合并后段最大字符数, 默认 1500")
-    ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_seacopara",
+    ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_nano",
                     help="若指定, 每个阶段 dump 一份 JSON 到此目录 "
                          "(vad/turns/bss/asr/final), 用于演示和调参定位")
+    ap.add_argument("--asr-model", default="FunAudioLLM/Fun-ASR-Nano-2512",
+                    help="ASR 模型 ID (覆盖默认 SeACo-Paraformer). 推荐选项: "
+                         "FunAudioLLM/Fun-ASR-Nano-2512 (轻量快); "
+                         "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch (默认准)")
     args = ap.parse_args()
+
+    # 切换 ASR 模型 (必须在 get_asr() 第一次调用之前)
+    if args.asr_model:
+        set_asr_model(args.asr_model)
 
     # 在任何 embedding 调用之前切换模型
     if args.embedder_model:
@@ -1095,7 +1115,7 @@ def main():
         # 命令行 --hotword 跟 corrections.json hotwords[] 合并
         effective_hotword = " ".join(filter(None, [args.hotword, load_hotwords()])).strip()
         if effective_hotword:
-            print(f"  [HOTWORD] {len(effective_hotword)}")
+            print(f"  [HOTWORD] {effective_hotword}")
         sentences = asr_full(clean_path, hotword=effective_hotword)
         print(f"  [ASR] 得到 {len(sentences)} 个句子")
 

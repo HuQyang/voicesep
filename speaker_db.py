@@ -31,7 +31,8 @@ _embedder = None
 #   iic/speech_campplus_sv_zh-cn_16k-common            (cam++, 192-d, 经典基线)
 _EMBEDDER_MODEL = os.environ.get(
     "SPEAKER_EMB_MODEL",
-    "iic/speech_eres2netv2_sv_zh-cn_16k-common",
+    # "iic/speech_eres2netv2_sv_zh-cn_16k-common",
+    "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common",
 )
 
 
