@@ -142,8 +142,27 @@ def run_vad(wav_path: str, engine: str = "fsmn",
                         max_end_silence_ms=fsmn_end_sil_ms)
 
 
+# 默认 ASR 模型. 用 set_asr_model() 切换. 推荐选项 (按场景):
+#   iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch  (默认, 准, 支持 hotword)
+#   FunAudioLLM/Fun-ASR-Nano-2512                                                 (轻量, 速度快)
+#   paraformer-zh                                                                 (经典 Paraformer-large)
+_asr_model_id = "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+
+
+def set_asr_model(model_id: str):
+    """运行时切换 ASR 模型. 下一次 get_asr() 会重新加载."""
+    global _asr_model_id, _asr
+    if model_id and model_id != _asr_model_id:
+        print(f"[asr] 切换模型: {_asr_model_id} → {model_id}")
+        _asr_model_id = model_id
+        _asr = None
+
+
 def get_asr():
-    """整段 ASR: Paraformer-large + 内置 VAD + CT-Punc + 时间戳"""
+    """
+    整段 ASR. 默认 SeACo-Paraformer (含内置 VAD + CT-Punc).
+    遇到不兼容 vad/punc 配置的模型 (Fun-ASR-Nano 等), 自动回退到无 VAD/Punc 加载.
+    """
     global _asr
     if _asr is None:
         print("[asr] 加载 Paraformer + FSMN-VAD + CT-Punc...")
@@ -405,6 +424,27 @@ def apply_itn(text: str, use_wetext: bool = True) -> str:
     return text
 
 
+def _asr_generate(asr, input_arg, hotword: str = "", with_batch_size_s: bool = False):
+    """
+    统一 ASR 调用入口. 处理不同模型的兼容性:
+      - Fun-ASR-Nano: 不支持 batch 解码, 不支持 hotword
+      - SeACo / Paraformer: 支持 batch + hotword
+    """
+    kwargs = {"input": input_arg}
+    is_nano = "Fun-ASR-Nano" in _asr_model_id or "fun-asr-nano" in _asr_model_id.lower()
+
+    if is_nano:
+        # Fun-ASR-Nano: 强制单段, 不传 hotword
+        kwargs["batch_size"] = 1
+    else:
+        if hotword:
+            kwargs["hotword"] = hotword
+        if with_batch_size_s:
+            kwargs["batch_size_s"] = 300
+
+    return asr.generate(**kwargs)
+
+
 def asr_wav(wav: np.ndarray, sr: int = SR, hotword: str = "") -> str:
     """对一段 numpy 波形跑 ASR, 返回清理后的纯文本 (用于 BSS 分离后的单路重转)"""
     asr = get_asr()
@@ -412,7 +452,7 @@ def asr_wav(wav: np.ndarray, sr: int = SR, hotword: str = "") -> str:
         sf.write(tmp.name, wav, sr)
         tmp_path = tmp.name
     try:
-        res = asr.generate(input=tmp_path, hotword=hotword)
+        res = _asr_generate(asr, tmp_path, hotword=hotword, with_batch_size_s=False)
         if not res:
             return ""
         return _clean_text(res[0].get("text", ""))
@@ -431,7 +471,7 @@ def asr_full(wav_path: str, hotword: str = ""):
     优先用 FunASR 自带的 sentence_info; 退化到按标点切 + token timestamp 推算时间.
     """
     asr = get_asr()
-    res = asr.generate(input=wav_path, batch_size_s=300, hotword=hotword)
+    res = _asr_generate(asr, wav_path, hotword=hotword, with_batch_size_s=True)
     if not res:
         return []
     r = res[0]
@@ -870,7 +910,15 @@ def main():
     ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_seacopara",
                     help="若指定, 每个阶段 dump 一份 JSON 到此目录 "
                          "(vad/turns/bss/asr/final), 用于演示和调参定位")
+    ap.add_argument("--asr-model", default=None,
+                    help="ASR 模型 ID (覆盖默认 SeACo-Paraformer). 推荐选项: "
+                         "FunAudioLLM/Fun-ASR-Nano-2512 (轻量快); "
+                         "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch (默认准)")
     args = ap.parse_args()
+
+    # 切换 ASR 模型 (必须在 get_asr() 第一次调用之前)
+    if args.asr_model:
+        set_asr_model(args.asr_model)
 
     # 在任何 embedding 调用之前切换模型
     if args.embedder_model:

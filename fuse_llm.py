@@ -19,13 +19,13 @@ LLM 语义融合两份 ASR 输出.
   LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 
 用法:
-  LLM_BASE_URL=http://localhost:11434/v1 \\
-  LLM_API_KEY=ollama \\
-  LLM_MODEL=qwen2.5:14b \\
-  python fuse_llm.py \\
-      --anchor result/钱部长_para.json \\
-      --alt    result/钱部长_firered.json \\
-      --output result/钱部长_fused_llm.txt \\
+  LLM_BASE_URL=http://localhost:11434/v1 \
+  LLM_API_KEY=ollama \
+  LLM_MODEL=qwen2.5:14b \
+  python fuse_llm.py \
+      --anchor result/钱部长_para.json \
+      --alt    result/钱部长_firered.json \
+      --output result/钱部长_fused_llm.txt \
       --output-json result/钱部长_fused_llm.json
 """
 import argparse
@@ -42,34 +42,32 @@ except ImportError:
     OpenAI = None
 
 
-# ─────────── Prompt ───────────
+# ─────────── Prompt (核心修改区) ───────────
 
-SYSTEM_PROMPT_FUSE = """你是会议转写融合助手. 接收同一段会议的两份 ASR 输出 (A 和 B), 目标是融合出"信息最完整 + 文字最通顺"的最终版.
+SYSTEM_PROMPT_FUSE = """你是专业的会议转写文本融合专家。你将接收同一段会议的两份 ASR 输出 (A 和 B)，目标是融合出“信息最完整 + 语义最通顺 + 逻辑最严密”的最终版。
 
 输入特点:
-- A (anchor): 时间戳和说话人分离更准, 但文字偶有噪声 / 错别字 / 重复
-- B (alt):    文字相对流畅, 但偶尔漏内容 / 说话人分得不细
+- A (anchor): 时间戳和说话人准，但文字可能有同音字错误、口语化或噪声。
+- B (alt): 文字更流畅、上下文更准确，但偶尔会漏掉半句话或说话人切分不细。
 
-任务:
-对输入的每一段 (按 §N 标记), 融合 A 与 B 同时间窗的两段文字, 输出最佳版本.
+你的任务是：对比每一段的 A 和 B，**结合整个批次的上下文语境**，输出该段的最佳版本。
 
-铁律 (违反等于失败):
-1. 时间戳和说话人 (§N 行的 [MM:SS-MM:SS] spk_X) 来自 A, **绝不修改**
-2. 文字融合策略:
-   - A 和 B 内容一致 → 选更通顺的版本
-   - A 有的内容 B 漏了 → **保留 A 的内容** (核心目标是不丢失信息)
-   - B 有的合理内容 A 漏了 → 并入
-   - 错别字 / 同音字 → 选明显更对的; 不能判断时倾向 A
-3. 数字 / 人名 / 地名 / 业务术语 → 选更准的; 不确定保留 A 的版本
-4. 不添加任何新事实; 不补充逻辑; 不展开缩写
-5. 适度清掉口语重复 ("我我我"→"我", "就是就是"→"就是"), 但保留 2-3 次的口语强调
-6. 保留 §N 标记和段顺序, 一段都不能漏
+【核心铁律】（违反会导致严重错误）：
+1. **绝对禁止生硬拼接（缝合怪行为）**：当 A 和 B 对同一句话有不同的识别结果（如“多少种” vs “多久”），**必须结合前后文逻辑推理**选择最合理的一方！严禁将两者的差异词汇生硬拼凑在一起！
+2. **全局上下文推理**：不要孤立地看一句话。如果后文提到了时间长度，那么前文的歧义就必须选择与时间相关的词汇；如果是专业术语，选择符合业务逻辑的一方。
+3. **查漏补缺，不丢信息**：
+   - A 和 B 意思一致 → 选表达更通顺的版本。
+   - A 漏了 B 有的内容 → 并入 B 的内容。
+   - B 漏了 A 有的内容 → 只要 A 的内容不是毫无意义的杂音，就必须保留。
+   - 实在无法通过上下文判断对错的同音字，优先倾向 A 的版本。
+4. **克制修改**：不添加原文不存在的新事实，不主动解释或展开缩写。适度清理严重的口语结巴（如“我我我”保留为“我”），但保留语气词。
+5. **格式锚定**：时间戳和说话人（§N [MM:SS-MM:SS] spk_X）来自 A，**绝不允许有任何修改、遗漏或合并**。
 
-输出格式 (严格遵守):
+输出格式 (严格遵守，一段都不能漏):
 §N [时间戳] 说话人:
 <融合后的文字>
 
-不要加任何前言 / 总结 / 解释. 段间空一行."""
+不要加任何前言、总结或解释代码。段间空一行。"""
 
 
 # ─────────── 读 ───────────
@@ -143,27 +141,37 @@ def format_batch(pairs: List[Dict]) -> str:
 
 
 def parse_fused_output(output: str, n_pairs: int, anchors: List[Dict]) -> List[str]:
-    """从 LLM 输出抽 §N 对应的融合文字"""
-    parts = re.split(r"§\s*(\d+)\s*", output)
-    # split 后: [前置, '1', §1, '2', §2, ...]
+    """从 LLM 输出抽 §N 对应的融合文字 (增强了正则容错)"""
+    # 匹配 § 符号，并允许后面跟着数字和可能存在的标点/换行
+    parts = re.split(r"§\s*(\d+)[^\n]*\n", "\n" + output)
     sections = {}
+    
     for i in range(1, len(parts), 2):
+        if not parts[i].isdigit():
+            continue
         idx = int(parts[i])
         body = parts[i + 1] if i + 1 < len(parts) else ""
-        # 去掉首行的 [时间戳] 说话人: 前缀 (LLM 必然会保留, 我们要的是正文)
         body = body.strip()
-        # 第一行通常是 [00:00-02:18] spk_2:, 跳过它
-        lines = body.split("\n", 1)
-        if len(lines) > 1 and re.match(r"\s*\[\d+:\d+", lines[0]):
-            body = lines[1].strip()
-        elif re.match(r"\s*\[\d+:\d+", lines[0]):
-            # 整段就一行且是时间戳, 没正文
-            body = ""
-        sections[idx] = body
+        
+        # 很多时候大模型会保留 `[00:00-02:18] spk_2:` 作为正文第一行，需要清理
+        lines = body.split("\n")
+        clean_lines = []
+        for line in lines:
+            line = line.strip()
+            # 如果这一行看起来像 "[12:34-12:56] spk_1:"，直接跳过
+            if re.match(r"^\[\d{2}:\d{2}-\d{2}:\d{2}\]\s*spk_\w+:?", line):
+                continue
+            clean_lines.append(line)
+            
+        sections[idx] = " ".join(clean_lines).strip()
 
     out = []
     for i in range(1, n_pairs + 1):
-        out.append(sections.get(i, anchors[i - 1]["text"]))   # 缺的回落 anchor
+        # 如果 LLM 漏掉了这一段或者解析为空，回退到 anchor
+        result_text = sections.get(i, "")
+        if not result_text:
+            result_text = anchors[i - 1]["text"]
+        out.append(result_text)
     return out
 
 
@@ -184,7 +192,7 @@ def batch_by_chars(pairs: List[Dict], batch_chars: int = 2500) -> List[List[Dict
 
 
 def llm_call(client, model: str, system: str, user: str,
-              max_tokens: int = 6000, temperature: float = 0.1,
+              max_tokens: int = 6000, temperature: float = 0.1,  # 保持低温，确保推理确定性
               retries: int = 2) -> Optional[str]:
     last_err = None
     for attempt in range(retries + 1):
@@ -216,16 +224,17 @@ def main():
         description=__doc__,
     )
     file_nm = "钱部长数据融合沟通"
-    ap.add_argument("--anchor", default=f"result/{file_nm}_para2.json",
+    ap.add_argument("--anchor", default=f"result/{file_nm}_seacopara_5.json",
                     help="时间结构来源 JSON (通常 main_pipeline.py 输出)")
-    ap.add_argument("--alt", default=f"result/{file_nm}_firered2.json",
+    ap.add_argument("--alt", default=f"result/{file_nm}_fireredasr2.json",
                     help="替代文本来源 JSON (通常 main_firered.py 输出)")
     ap.add_argument("--output", default=f"result/{file_nm}_fused.txt", help="融合后 .txt 路径")
     ap.add_argument("--output-json", default=f"result/{file_nm}_fused.json", help="融合后 .json (可选)")
     ap.add_argument("--api-key", default="ollama")
     ap.add_argument("--base-url", default="http://localhost:11434/v1")
     ap.add_argument("--model", default="qwen2.5:14b")
-    ap.add_argument("--batch-chars", type=int, default=2500)
+    # 增加一点 batch 长度，让它能看到更多的上下文来做推理
+    ap.add_argument("--batch-chars", type=int, default=3000) 
     ap.add_argument("--skip-overlap", action="store_true",
                     help="跳过 anchor 中 overlap=True 的段 (不送 LLM, 直接保留 anchor 原文)")
     ap.add_argument("--min-anchor-chars", type=int, default=3,
@@ -247,13 +256,11 @@ def main():
     alts = load_paragraphs(args.alt)
     print(f"[load] anchor: {len(anchors)} 段  alt: {len(alts)} 段")
 
-    # 时长一致性
     a_dur = max((p["end"] for p in anchors), default=0)
     b_dur = max((p["end"] for p in alts), default=0)
     if abs(a_dur - b_dur) > 60:
         print(f"[!] 警告: 两份时长差 {abs(a_dur - b_dur):.0f}s, 可能不是同一段音频")
 
-    # 构建 pairs: 每个 anchor 段 + 它时间窗内的 alt 拼起来
     pairs = []
     skipped = []
     for i, a in enumerate(anchors, 1):
@@ -280,7 +287,7 @@ def main():
         batches = batch_by_chars(pairs, batch_chars=args.batch_chars)
         print(f"[fuse] 分 {len(batches)} 批")
 
-        fused_lookup = {}   # idx → fused_text
+        fused_lookup = {}   
         for bi, batch in enumerate(batches, 1):
             inp = format_batch(batch)
             n_chars = len(inp)
@@ -300,15 +307,13 @@ def main():
             for p, t in zip(batch, texts):
                 fused_lookup[p["idx"]] = (t.strip() if t.strip() else p["anchor"]["text"])
 
-        # 重建完整 anchors 顺序 (含 skipped)
         fused_texts = []
         for i, a in enumerate(anchors, 1):
             if i in fused_lookup:
                 fused_texts.append(fused_lookup[i])
             else:
-                fused_texts.append(a["text"])   # skipped 段保留 anchor 原文
+                fused_texts.append(a["text"])
 
-    # ─── 写出 ───
     out_dir = os.path.dirname(args.output)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
