@@ -46,6 +46,9 @@ import numpy as np
 import librosa
 import soundfile as sf
 import torch
+import torchaudio  # noqa: F401  # 必须先 import, 触发 torchaudio 的 deprecation shim,
+                   # 否则 pyannote 4.x + torchaudio 2.10 会在 import 时报
+                   # AttributeError: module 'torchaudio' has no attribute 'AudioMetaData'
 
 
 SR = 16000
