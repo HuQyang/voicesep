@@ -227,13 +227,22 @@ def _fmt_ts(start) -> str:
     return f"{m:02d}:{sec:02d}"
 
 
+def _fmt_ts_range(start, end) -> str:
+    """格式化时间区间. 有 end 用 'MM:SS-MM:SS', 没 end 用 'MM:SS'."""
+    if start is None:
+        return ""
+    if end is None:
+        return _fmt_ts(start)
+    return f"{_fmt_ts(start)}-{_fmt_ts(end)}"
+
+
 def format_batch_input(paragraphs: List[Dict]) -> str:
     """带 §N 标记, 方便 LLM 保段"""
     lines = []
     for i, p in enumerate(paragraphs):
         prefix = ""
         if p.get("start") is not None:
-            prefix += f"[{_fmt_ts(p['start'])}] "
+            prefix += f"[{_fmt_ts_range(p['start'], p.get('end'))}] "
         if p.get("speaker"):
             prefix += f"{p['speaker']}: "
         lines.append(f"§{i + 1} {prefix}{p['text']}")
@@ -312,16 +321,16 @@ def main():
     )
     # file_nm = "04.21公交数据要素比赛决赛培训"
     file_nm = "钱部长数据融合沟通"
-    ap.add_argument("--input",default=f"result/{file_nm}_para.json", 
+    ap.add_argument("--input",default=f"result/{file_nm}_para2.json", 
                     help="ASR 输出: .json (simple/firered) 或 .txt")
-    ap.add_argument("--output", default=f"result/{file_nm}_para_light.txt", help="清洁后的 .txt")
-    ap.add_argument("--output-json", default=f"result/{file_nm}_para_light.json",
+    ap.add_argument("--output", default=f"result/{file_nm}_para2_light.txt", help="清洁后的 .txt")
+    ap.add_argument("--output-json", default=f"result/{file_nm}_para2_light.json",
                     help="可选: 同时输出结构化 JSON (含章节)")
     ap.add_argument("--chapters", action="store_true",
                     help="同时生成章节速览 (会多调一次 LLM)")
     ap.add_argument("--api-key", default="ollama", help="覆盖 LLM_API_KEY")
     ap.add_argument("--base-url", default="http://localhost:11434/v1", help="覆盖 LLM_BASE_URL")
-    ap.add_argument("--model", default="qwen2.5:14b", help="覆盖 LLM_MODEL")
+    ap.add_argument("--model", default="deepseek-r1:14b", help="覆盖 LLM_MODEL")
     ap.add_argument("--batch-chars", type=int, default=2500,
                     help="一批送多少字 (越大越快, 但可能超 context)")
     ap.add_argument("--no-correct", action="store_true",
@@ -408,7 +417,7 @@ def main():
         for p in cleaned:
             prefix = ""
             if p.get("start") is not None:
-                prefix += f"[{_fmt_ts(p['start'])}] "
+                prefix += f"[{_fmt_ts_range(p['start'], p.get('end'))}] "
             if p.get("speaker"):
                 prefix += f"{p['speaker']}: "
             f.write(f"{prefix}{p['text']}\n\n")
