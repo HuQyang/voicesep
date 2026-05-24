@@ -484,22 +484,22 @@ def main():
 
     args = ap.parse_args()
 
-    # ── [1] 加载 + 可选降噪 ──
-    wav_path = args.wav
+    # ── [1] 加载 (统一转 16k mono wav, 绕开 pyannote 的 torchcodec 解码路径) ──
+    print(f"\n=== [1] 加载 / 预处理 {args.wav} ===")
+    wav, _ = librosa.load(args.wav, sr=SR, mono=True)
+    print(f"  时长 {len(wav)/SR:.1f}s, sr={SR}")
     if args.denoise:
-        print(f"\n=== [1] FRCRN 降噪 ===")
+        print(f"  → FRCRN 降噪")
         import main_bss
         from main_bss import run_denoise
-        wav, _ = librosa.load(args.wav, sr=SR, mono=True)
         wav = run_denoise(wav, sr=SR)
         main_bss._denoise_pipe = None
         _free_gpu("after-denoise")
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        sf.write(tmp.name, wav, SR)
-        wav_path = tmp.name
-        print(f"  降噪后 → {wav_path}")
-    else:
-        print(f"\n=== [1] 跳过降噪 ===")
+    # 一律写临时 wav, pyannote/whisper 都吃文件
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    sf.write(tmp.name, wav, SR)
+    wav_path = tmp.name
+    print(f"  → {wav_path}")
 
     # ── [2] pyannote diarization ──
     print(f"\n=== [2] pyannote diarization ===")
@@ -583,10 +583,9 @@ def main():
                 f.write(f"{p['text']}\n\n")
         print(f"  [save] {args.output_txt}")
 
-    # 清理临时降噪文件
-    if args.denoise and wav_path != args.wav:
-        try: os.unlink(wav_path)
-        except OSError: pass
+    # 清理临时 wav
+    try: os.unlink(wav_path)
+    except OSError: pass
 
     print("\n=== 完成 ===")
 
