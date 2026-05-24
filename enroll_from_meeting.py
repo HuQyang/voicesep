@@ -119,7 +119,14 @@ def main():
     ap.add_argument("--min-dur", type=int, default=800)
     ap.add_argument("--chunk-max", type=int, default=3000)
     ap.add_argument("--chunk-hop", type=int, default=1500)
+    ap.add_argument("--embedder-model", default=None,
+                    help="声纹模型. 必须和 main_pipeline 用同一个, 否则维度/分布不兼容. "
+                         "main_pipeline 默认 iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (512-d)")
     args = ap.parse_args()
+
+    if args.embedder_model:
+        from speaker_db import set_embedder_model
+        set_embedder_model(args.embedder_model)
 
     # 1. 加载
     print(f"\n=== [1/5] 加载 {args.wav} ===")
