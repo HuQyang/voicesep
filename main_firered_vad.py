@@ -1,5 +1,5 @@
 """
-端到端转写 demo - ASR 换成 FireRedASR (其他阶段复用 main_pipeline 的模块)
+端到端转写 demo - ASR 换成 FireRedASR2 (其他阶段复用 main_pipeline 的模块)
 
 管线:
   音频
@@ -7,26 +7,26 @@
    → [2] FSMN-VAD 切段
    → [3] 声纹聚类 → spk turn
    → [4] BSS 重叠检测            (可关 --no-bss)
-   → [5] FireRedASR (AED-L 或 LLM-L) + CT-Punc + ITN
+   → [5] FireRedASR2 (AED 或 LLM) + CT-Punc + ITN
    → [6] 按时间戳染 spk + 段落化
 
 前置准备:
-  1) 克隆 FireRedASR 仓库, 让 Python 找到 fireredasr 包:
-       git clone https://github.com/FireRedTeam/FireRedASR.git
-       cd FireRedASR && pip install -e .
-       # 或者 export PYTHONPATH=/path/to/FireRedASR:$PYTHONPATH
-  2) 下载模型权重 (3090 推荐 AED-L, 1.1B):
-       huggingface-cli download FireRedTeam/FireRedASR-AED-L \
-           --local-dir ./pretrained/FireRedASR-AED-L
-     (LLM-L 8.3B 也可以, 但显存吃紧)
+  1) 克隆 FireRedASR2S 仓库, 让 Python 找到 fireredasr2s 包:
+       git clone https://github.com/FireRedTeam/FireRedASR2S.git
+       cd FireRedASR2S && pip install -e .
+       # 或者 export PYTHONPATH=/path/to/FireRedASR2S:$PYTHONPATH
+  2) 下载模型权重 (3090 推荐 AED):
+       huggingface-cli download FireRedTeam/FireRedASR2-AED \
+           --local-dir ./pretrained/FireRedASR2-AED
+     (LLM 版本也可以, 但显存吃紧)
 
 用法:
-  python main_firered.py --wav data/xxx.mp3 \
-      --model-dir ./pretrained/FireRedASR-AED-L \
-      --output-txt result_firered.txt
+  python main_firered2.py --wav data/xxx.mp3 \
+      --model-dir ./pretrained/FireRedASR2-AED \
+      --output-txt result_firered2.txt
 
-  python main_firered.py --wav xxx --variant llm \
-      --model-dir ./pretrained/FireRedASR-LLM-L
+  python main_firered2.py --wav xxx --variant llm \
+      --model-dir ./pretrained/FireRedASR2-LLM
 """
 import argparse
 import gc
@@ -64,47 +64,113 @@ from scd import split_segments_by_scd
 from main_pipeline import _dump_debug, merge_consecutive_same_spk as _merge_consecutive_same_spk_v2
 
 
-# ─────────── FireRedASR 后端 ───────────
+# ─────────── FireRedASR2 后端 ───────────
 _firered = None
 _punc = None
 
+# ─────────── FireRedVAD 后端 ───────────
+_firered_vad = None
 
-def get_firered(model_dir: str, variant: str = "aed"):
-    """懒加载 FireRedASR-AED-L 或 LLM-L"""
+def run_vad_firered(wav_path: str, model_dir: str = "pretrained/FireRedVAD/VAD"):
+    """懒加载 FireRedVAD 的非流式版本"""
+    global _firered_vad
+    if _firered_vad is None:
+        try:
+            from fireredvad import FireRedVad, FireRedVadConfig
+        except ImportError:
+            raise ImportError("[!] 找不到 fireredvad 包。请先克隆仓库并 pip install -e .")
+        
+        print(f"[vad] 加载 FireRedVAD: {model_dir}")
+        # 初始化配置参数 (1 frame = 10ms)
+        config = FireRedVadConfig(
+            use_gpu=True if torch.cuda.is_available() else False,
+            smooth_window_size=5,
+            speech_threshold=0.4,       # 判断为人声的阈值
+            min_speech_frame=15,        # 最小语音长度 150ms (防止短爆音)
+            max_speech_frame=3000,      # 最大允许长度 30s
+            min_silence_frame=20,       # 最小静音长度 200ms (小于这个值的静音会被合并)
+            merge_silence_frame=0
+        )
+        # 加载非流式 VAD 模型
+        _firered_vad = FireRedVad.from_pretrained(model_dir, config)
+    
+    print(f"[vad] 正在使用 FireRedVAD 推理: {wav_path}")
+    
+    # 官方正牌调用接口
+    try:
+        raw_results = _firered_vad.detect(wav_path)
+    except Exception as e:
+        print(f"  [vad-fail] FireRedVAD 推理失败: {e}")
+        return []
+
+    segments_ms = []
+    
+    # 精准解析官方的 Tuple 结构: ({'timestamps': [(start, end), ...]}, tensor)
+    if isinstance(raw_results, tuple) and len(raw_results) > 0 and isinstance(raw_results[0], dict):
+        timestamps = raw_results[0].get("timestamps", [])
+        for s_s, e_s in timestamps:
+            segments_ms.append((int(s_s * 1000), int(e_s * 1000)))
+            
+    # 兜底：如果未来版本改成了直接返回列表
+    elif isinstance(raw_results, list):
+        for res in raw_results:
+            if isinstance(res, (list, tuple)) and len(res) == 2:
+                segments_ms.append((int(res[0] * 1000), int(res[1] * 1000)))
+            elif isinstance(res, dict):
+                s_s = res.get("start", res.get("start_time", 0.0))
+                e_s = res.get("end", res.get("end_time", 0.0))
+                segments_ms.append((int(s_s * 1000), int(e_s * 1000)))
+
+    return segments_ms
+
+# 拦截调度器：根据传参决定用哪个 VAD
+def run_vad(wav_path, engine="firered"):
+    if engine == "firered":
+        # 你的模型实际下载路径（注意要指向里面的 VAD 文件夹）
+        return run_vad_firered(wav_path, model_dir="pretrained/FireRedVAD/VAD")
+    else:
+        # 退回使用原管线逻辑
+        from main_pipeline import run_vad as original_run_vad
+        return original_run_vad(wav_path, engine=engine)
+    
+
+def get_firered(model_dir: str, variant: str = "aed", beam_size: int = 3):
+    """懒加载 FireRedASR2-AED 或 LLM"""
     global _firered
     if _firered is None:
         try:
-            from fireredasr.models.fireredasr import FireRedAsr
+            from fireredasr2s.fireredasr2 import FireRedAsr2, FireRedAsr2Config
         except ImportError as e:
-            print("[!] 找不到 fireredasr 包. 先按文件头说明克隆并 pip install -e .")
+            print("[!] 找不到 fireredasr2s 包. 先按文件头说明克隆 FireRedASR2S 并 pip install -e .")
             raise
-        print(f"[asr] 加载 FireRedASR-{variant.upper()}: {model_dir}")
-        _firered = FireRedAsr.from_pretrained(variant, model_dir)
+        print(f"[asr] 加载 FireRedASR2-{variant.upper()}: {model_dir}")
+
+        # FireRedASR2 的配置在加载模型时直接传入
+        if variant == "aed":
+            config = FireRedAsr2Config(
+                use_gpu=True if torch.cuda.is_available() else False,
+                beam_size=beam_size,
+                nbest=1,
+                decode_max_len=0,
+                softmax_smoothing=1.25,
+                aed_length_penalty=0.6,
+                eos_penalty=1.0,
+                return_timestamp=False # 设为False输出纯文本字典，兼容后置标点和文本分配模块
+            )
+        else:
+            config = FireRedAsr2Config(
+                use_gpu=True if torch.cuda.is_available() else False,
+                beam_size=beam_size,
+                decode_max_len=0,
+                decode_min_len=0,
+                repetition_penalty=3.0,
+                llm_length_penalty=1.0,
+                temperature=1.0,
+                return_timestamp=False
+            )
+            
+        _firered = FireRedAsr2.from_pretrained(variant, model_dir, config)
     return _firered
-
-
-def _firered_args(variant: str, beam_size: int = 3) -> dict:
-    """变体专属推理参数 (与 FireRedASR README 一致)"""
-    if variant == "aed":
-        return {
-            "use_gpu": 1 if torch.cuda.is_available() else 0,
-            "beam_size": beam_size,
-            "nbest": 1,
-            "decode_max_len": 0,
-            "softmax_smoothing": 1.25,
-            "aed_length_penalty": 0.6,
-            "eos_penalty": 1.0,
-        }
-    # LLM 变体
-    return {
-        "use_gpu": 1 if torch.cuda.is_available() else 0,
-        "beam_size": beam_size,
-        "decode_max_len": 0,
-        "decode_min_len": 0,
-        "repetition_penalty": 3.0,
-        "llm_length_penalty": 1.0,
-        "temperature": 1.0,
-    }
 
 
 def firered_transcribe_files(wav_paths, args) -> list:
@@ -113,17 +179,19 @@ def firered_transcribe_files(wav_paths, args) -> list:
     """
     if not wav_paths:
         return []
-    model = get_firered(args.model_dir, args.variant)
-    cfg = _firered_args(args.variant, args.beam_size)
+    
+    # 动态获取模型 (参数包含 beam_size 初始化 config)
+    model = get_firered(args.model_dir, args.variant, args.beam_size)
     out = [""] * len(wav_paths)
     BATCH = args.firered_batch
+    
     for i in range(0, len(wav_paths), BATCH):
         batch = wav_paths[i:i+BATCH]
         uttids = [f"utt_{i+j}" for j in range(len(batch))]
         try:
             with torch.no_grad():
-                # FireRedASR README 用法: (batch_uttid, batch_wav_path, args_dict)
-                results = model.transcribe(uttids, batch, cfg)
+                # FireRedASR2 用法: 直接传 uttid 和路径，无需传 cfg
+                results = model.transcribe(uttids, batch)
             for j, r in enumerate(results):
                 text = r.get("text", "") if isinstance(r, dict) else str(r)
                 out[i+j] = _clean_text(text)
@@ -161,7 +229,7 @@ def apply_punc(text: str) -> str:
 HALLU_BLACKLIST = {
     # 称谓/情感 (业务场景不会出现)
     "宝宝", "老婆", "老公", "媳妇", "亲爱的", "想你了", "爱你",
-    "好可爱", "哈哈哈哈", "嘻嘻", "么么哒",
+    "好可爱", "哈哈哈哈", "嘻嘻", "么么哒", "呜呜呜",
     # 娱乐/游戏/平台
     "火鸡面", "王者荣耀", "和平精英", "原神", "抖音", "小红书",
     "微博", "B站", "网易云",
@@ -185,7 +253,7 @@ def has_hallucination(text: str, extra: set = None) -> str:
 def has_repetition(text: str,
                    min_pattern_len: int = 3,
                    max_pattern_len: int = 10,
-                   min_repeats: int = 4) -> str:
+                   min_repeats: int = 2) -> str:
     """
     检测短串机械重复 (FireRedASR-AED 在弱信号长段的典型幻觉模式).
     例: "这个里面这个里面...这个里面" × 21 次.
@@ -287,12 +355,6 @@ def redistribute_text_by_speaker(text: str, sub_segments, turns):
     """
     给一个"ASR 块"的输出文本, 按 turns 时间戳和 sub_segments 的速率, 切回每个 speaker 的子段.
     返回: [{"start", "end", "text", "speaker"}, ...]
-
-    规则:
-      - 每个 sub_segment 先按主导 spk 染色
-      - 相邻同 spk 的 sub 合并成一个 group
-      - groups 数 ≤ 1 → 整块文字归一个 spk
-      - groups 数 ≥ 2 → 按时间比例切文字, 优先在标点处下刀
     """
     if not sub_segments or not text.strip():
         return []
@@ -346,7 +408,6 @@ def redistribute_text_by_speaker(text: str, sub_segments, turns):
 def _dump_segments_to_tmp(wav, segments, sr=SR, min_dur_s=0.3, max_dur_s=30.0):
     """
     把每个 segment 切片存临时 wav. 超过 max_dur_s 的段按 max_dur_s 强切.
-    FireRedASR-AED 训练时 input_length_max=60s, 大于这个直接 OOM.
     """
     out, tmps = [], []
     max_samples = int(max_dur_s * sr)
@@ -374,21 +435,22 @@ def main():
     ap = argparse.ArgumentParser()
     # file_nm = "2026-03-18 14_28 记录"
     # file_nm = "车辆管理业务研讨"
-    file_nm = "04.21公交数据要素比赛决赛培训"
+    # file_nm = "04.21公交数据要素比赛决赛培训"
     # file_nm = "2025-09-30 15_56 记录"
-    # file_nm = "钱部长数据融合沟通"
+    file_nm = "钱部长数据融合沟通"
+
     ap.add_argument("--wav",default=f"data/{file_nm}.mp3", help="输入音频")
-    ap.add_argument("--model-dir", default="pretrained/FireRedASR-AED-L", help="FireRedASR 权重目录")
+    ap.add_argument("--model-dir", default="pretrained/FireRedASR2-AED", help="FireRedASR2 权重目录")
     ap.add_argument("--variant", choices=["aed", "llm"], default="aed")
     ap.add_argument("--firered-batch", type=int, default=1,
                     help="一次喂 FireRedASR 的段数 (3090 24G 建议 1, 大于 1 容易 OOM)")
     ap.add_argument("--beam-size", type=int, default=3, help="解码 beam, 1=贪心更省显存")
     ap.add_argument("--firered-max-seg", type=float, default=30.0,
-                    help="ASR 输入 segme dnt 长度上限(s), 超过强切. FireRedASR 训练 max=60s")
+                    help="ASR 输入 segment 长度上限(s), 超过强切. FireRedASR 训练 max=60s")
     ap.add_argument("--asr-merge", action=argparse.BooleanOptionalAction, default=True,
                     help="合并相邻短 VAD 段到 ~target_s, 喂 FireRedASR 更长上下文, "
                          "ASR 后用 turns 时间戳切回多 speaker 子段. 默认开启.")
-    ap.add_argument("--asr-merge-target-s", type=float, default=30.0,
+    ap.add_argument("--asr-merge-target-s", type=float, default=20.0,
                     help="ASR 合并目标长度(s). 默认 25, 接近 FireRedASR 训练 30s 上限")
     ap.add_argument("--overlap-engine", choices=["firered", "paraformer"], default="paraformer",
                     help="重叠区分离后的两路用哪个 ASR. paraformer 在 BSS 伪影上幻觉少, 推荐")
@@ -404,7 +466,9 @@ def main():
     ap.add_argument("--itn", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--wetext-itn", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--denoise", action=argparse.BooleanOptionalAction, default=False)
-    ap.add_argument("--vad", choices=["fsmn", "silero"], default="fsmn")
+    # ap.add_argument("--vad", choices=["fsmn", "silero"], default="fsmn")
+    ap.add_argument("--vad", choices=["fsmn", "silero", "firered"], default="firered",
+                    help="VAD引擎选择: firered 为官方最新方案")
     ap.add_argument("--no-bss", action="store_true")
     ap.add_argument("--bss-min-dur", type=float, default=2.0)
     ap.add_argument("--bss-max-dur", type=float, default=30.0)
@@ -421,9 +485,9 @@ def main():
     ap.add_argument("--min-dur", type=int, default=400)
     ap.add_argument("--chunk-max", type=int, default=2000)
     ap.add_argument("--chunk-hop", type=int, default=1000)
-    ap.add_argument("--output", default=f"result/{file_nm}_firered3.json")
+    ap.add_argument("--output", default=f"result/{file_nm}_firered_vad.json")
     ap.add_argument("--output-dir", default="result")
-    ap.add_argument("--output-txt", default=f"result/{file_nm}_firered3.txt")
+    ap.add_argument("--output-txt", default=f"result/{file_nm}_firered_vad.txt")
     ap.add_argument("--para-gap", type=int, default=800)
     ap.add_argument("--para-max-dur", type=int, default=60000)
     ap.add_argument("--para-max-chars", type=int, default=600)
@@ -448,7 +512,7 @@ def main():
                     help="声纹模型 (覆盖默认 ERes2NetV2). 推荐: "
                          "iic/speech_eres2net_base_200k_sv_zh-cn_16k-common (200k 训练, 192-d); "
                          "iic/speech_eres2net_large_200k_sv_zh-cn_16k-common (最强, 512-d)")
-    ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_firered2",
+    ap.add_argument("--debug-dir", default=f"result/debug/{file_nm}_firered2S",
                     help="若指定, 每个阶段 dump JSON 到此目录")
     ap.add_argument("--volume-boost", type=float, default=0.0,
                     help="放大音量倍数。设为 0.0 时执行自动峰值标准化(自动拉到最大不爆音音量)。")
@@ -620,8 +684,8 @@ def main():
             _release_model(main_bss, "_bss_pipe")
             _free_gpu("after bss")
 
-        # ─── 5. FireRedASR ───
-        print(f"\n=== [5/6] FireRedASR-{args.variant.upper()} ===")
+        # ─── 5. FireRedASR2 ───
+        print(f"\n=== [5/6] FireRedASR2-{args.variant.upper()} ===")
 
         # 决定 ASR 输入单元: 合并模式拼到 ~target_s, 否则一个 VAD 段一块
         if args.asr_merge:
@@ -651,7 +715,7 @@ def main():
             block_records.append((bs, be, subs, f.name))
             tmp_paths.append(f.name)
 
-        print(f"  落盘 {len(block_records)} 个 ASR 块, 喂 FireRedASR...")
+        print(f"  落盘 {len(block_records)} 个 ASR 块, 喂 FireRedASR2...")
         try:
             texts = firered_transcribe_files([r[3] for r in block_records], args)
         finally:
@@ -851,8 +915,6 @@ def main():
 
         if args.output_txt:
             os.makedirs(args.output_dir, exist_ok=True)
-            # filename = os.path.splitext(os.path.basename(args.wav))[0]
-            # txt_file = os.path.join(args.output_dir, f"{filename}_fire3_denoise.txt")
             txt_file = args.output_txt
             with open(txt_file, "w", encoding="utf-8") as f:
                 f.write(f"{os.path.basename(args.wav)}\n\n")

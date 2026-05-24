@@ -12,6 +12,9 @@ data/
 meetting_data/
 meetting_data.zip
 test_audio.wav
+pretrained/
+FireRedVAD/
+FireRedASR2S/
 
 # BSS / 中间产物
 bss_out/
