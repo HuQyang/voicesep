@@ -32,6 +32,8 @@ import librosa
 import soundfile as sf
 import torch
 from funasr import AutoModel
+from model import FunASRNano
+
 
 import main_bss  # 需要操作其内部 _denoise_pipe / _bss_pipe 引用以释放显存
 from speaker_db import extract_embedding_from_wave, SpeakerDB
@@ -122,7 +124,8 @@ def get_asr():
         print("[asr] 加载 Paraformer + FSMN-VAD + CT-Punc...")
         _asr = AutoModel(
             # model="paraformer-zh",
-            model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            # model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            model = "FunAudioLLM/Fun-ASR-Nano-2512",
             vad_model="fsmn-vad",
             punc_model="ct-punc",
             disable_update=True,

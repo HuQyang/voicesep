@@ -15,6 +15,7 @@ test_audio.wav
 pretrained/
 FireRedVAD/
 FireRedASR2S/
+Fun-ASR
 
 # BSS / 中间产物
 bss_out/
