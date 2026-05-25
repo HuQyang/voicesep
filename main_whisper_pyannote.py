@@ -46,9 +46,22 @@ import numpy as np
 import librosa
 import soundfile as sf
 import torch
-import torchaudio  # noqa: F401  # 必须先 import, 触发 torchaudio 的 deprecation shim,
-                   # 否则 pyannote 4.x + torchaudio 2.10 会在 import 时报
-                   # AttributeError: module 'torchaudio' has no attribute 'AudioMetaData'
+import torchaudio
+
+# ─── 兼容补丁: torchaudio 2.10 彻底删了 AudioMetaData, 但 pyannote 4.0.4 的
+# core/io.py:60 还在用它做 type annotation, 不补就 import 时崩.
+# main_pynna.py 能跑是因为 funasr 内部已经悄悄打了这个补丁.
+if not hasattr(torchaudio, "AudioMetaData"):
+    from dataclasses import dataclass
+    @dataclass
+    class _AudioMetaDataShim:
+        sample_rate: int = 0
+        num_frames: int = 0
+        num_channels: int = 0
+        bits_per_sample: int = 0
+        encoding: str = ""
+    torchaudio.AudioMetaData = _AudioMetaDataShim
+    print("[compat] 已补 torchaudio.AudioMetaData (torchaudio 2.10 移除 / pyannote 4.x 仍引用)")
 
 
 SR = 16000
